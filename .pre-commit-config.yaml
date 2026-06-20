@@ -1,6 +1,14 @@
 # Run locally with `prek run --all-files` (or `pre-commit run --all-files`).
 # `prek` is a fast, drop-in Rust reimplementation of pre-commit:
 # https://github.com/j178/prek
+
+# pre-commit.ci has no Rust toolchain, so skip the cargo hooks there. They run
+# locally and in the dedicated CI workflow instead.
+ci:
+  skip:
+    - cargo-fmt
+    - cargo-clippy
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
