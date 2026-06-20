@@ -32,10 +32,10 @@ pub use image::{
     bitpix_to_image_type, copy_header_only, copy_header_only_open, create_cube_open,
     is_structural_keyword, resize_image,
 };
-pub use mem_header::{CubeLayout, create_mem_cube, extract_header_layout};
 pub use keys::{
     delete_key, has_key, read_key_f64, read_key_string, update_key_f64, update_key_i64,
     update_key_logical, update_key_str, write_comment,
 };
+pub use mem_header::{CubeLayout, create_mem_cube, extract_header_layout};
 pub use path::output_path;
 pub use pixel::{CubeElem, PixelType};
