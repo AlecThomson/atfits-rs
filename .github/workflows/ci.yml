@@ -33,11 +33,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --all --check
+      # prek is a fast Rust reimplementation of pre-commit; it runs the hooks in
+      # .pre-commit-config.yaml (generic checks + cargo fmt/clippy).
+      - name: Install prek
+        uses: taiki-e/install-action@v2
+        with:
+          tool: prek
 
-      - name: Clippy
-        run: cargo clippy --all-targets ${{ env.CARGO_FEATURES }} -- -D warnings
+      - name: Run pre-commit hooks (prek)
+        run: prek run --all-files --show-diff-on-failure
 
   test:
     name: Test (${{ matrix.os }})

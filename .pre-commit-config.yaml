@@ -1,0 +1,32 @@
+# Run locally with `prek run --all-files` (or `pre-commit run --all-files`).
+# `prek` is a fast, drop-in Rust reimplementation of pre-commit:
+# https://github.com/j178/prek
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+
+  # cargo fmt / clippy as local hooks so they use the repo's toolchain and the
+  # fitsio-src feature (compiles cfitsio from source — no system libcfitsio).
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets --features fitsio-src -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false

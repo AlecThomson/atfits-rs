@@ -175,7 +175,10 @@ pub fn create_cube_open(
         fitsio::sys::ffghsp(in_fptr.as_raw(), &mut nkeys, &mut morekeys, &mut status);
         check_status(status)?;
 
-        let mut card = [0i8; 81];
+        // `c_char` is signed on x86_64/macOS but unsigned (u8) on aarch64-Linux;
+        // cfitsio's bindings type the card pointer as `*mut c_char`, so use that
+        // rather than a hard-coded `i8` (which fails to compile on aarch64).
+        let mut card = [0 as std::os::raw::c_char; 81];
         for i in 1..=nkeys {
             card.fill(0);
             fitsio::sys::ffgrec(in_fptr.as_raw(), i, card.as_mut_ptr(), &mut status);
