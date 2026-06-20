@@ -1,5 +1,9 @@
 # atfits-rs
 
+[![CI](https://github.com/AlecThomson/atfits-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/AlecThomson/atfits-rs/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/atfits-rs.svg)](https://crates.io/crates/atfits-rs)
+[![docs.rs](https://img.shields.io/docsrs/atfits-rs)](https://docs.rs/atfits-rs)
+
 Shared low-level [cfitsio](https://heasarc.gsfc.nasa.gov/fitsio/) helpers for the
 `at*-rs` family of FITS tools ([`fitscube-rs`](https://github.com/AlecThomson/fitscube-rs),
 [`convolve-rs`](https://github.com/AlecThomson/convolve-rs), …).
@@ -20,11 +24,58 @@ against cfitsio, factored out so each tool shares one tested implementation:
 Domain logic (beams, combine/extract, convolution, spectral specs) stays in the
 individual crates.
 
+## Install
+
+```toml
+[dependencies]
+atfits-rs = "0.1"
+```
+
 ## Features
 
 - `fitsio-src` — compile cfitsio from source (needs only a C compiler). Off by
   default; consumers that build wheels enable it. Without it, the system cfitsio
   is linked.
+
+  ```toml
+  atfits-rs = { version = "0.1", features = ["fitsio-src"] }
+  ```
+
+## Example
+
+Create a cube from a 2D template, stream planes via `CubeElem` section I/O, then
+read them back:
+
+```rust
+use atfits_rs::{CubeElem, create_cube_open, update_key_f64};
+use fitsio::FitsFile;
+
+let dims = vec![size, size, nchan]; // FITS axis order: NAXIS1, NAXIS2, NAXIS3
+let plane_elems = size * size;
+
+// Single open handle — writes the data unit once, no doubled zero-fill on close.
+let mut out = create_cube_open(&template, &cube_path, -32, &dims)?;
+update_key_f64(&mut out, "CRVAL3", 1.0e9)?; // ffuky* — updates in place
+
+for c in 0..nchan {
+    let plane: Vec<f32> = (0..plane_elems).map(|i| (c * 100 + i) as f32).collect();
+    let start = c * plane_elems;
+    f32::write_section(&mut out, start, start + plane_elems, &plane)?;
+}
+
+// Read back.
+let mut f = FitsFile::open(cube_path.to_str().unwrap())?;
+let all = f32::read_full(&mut f)?;
+# Ok::<(), atfits_rs::AtfitsError>(())
+```
+
+## Docs
+
+Full API reference: <https://docs.rs/atfits-rs>. Build locally with:
+
+```sh
+cargo doc --no-deps --features fitsio-src --open
+```
 
 ## License
 
