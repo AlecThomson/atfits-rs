@@ -28,7 +28,7 @@ individual crates.
 
 ```toml
 [dependencies]
-atfits-rs = "0.1"
+atfits-rs = "1"
 ```
 
 ## Features
@@ -38,7 +38,7 @@ atfits-rs = "0.1"
   is linked.
 
   ```toml
-  atfits-rs = { version = "0.1", features = ["fitsio-src"] }
+  atfits-rs = { version = "1", features = ["fitsio-src"] }
   ```
 
 ## Example
@@ -75,6 +75,25 @@ Full API reference: <https://docs.rs/atfits-rs>. Build locally with:
 
 ```sh
 cargo doc --no-deps --features fitsio-src --open
+```
+
+## Contributing
+
+Lint and formatting run via [pre-commit](https://pre-commit.com) hooks
+(`cargo fmt`, `cargo clippy`, plus generic checks). CI runs the same hooks with
+[prek](https://github.com/j178/prek), a fast Rust reimplementation — install
+either:
+
+```sh
+# prek (Rust, recommended)
+cargo install prek
+prek install            # install the git hook
+prek run --all-files    # run against the whole tree
+
+# or pre-commit (Python)
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
 ```
 
 ## License
