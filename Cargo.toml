@@ -2,5 +2,34 @@
 name = "atfits-rs"
 version = "0.1.0"
 edition = "2024"
+authors = ["Alec Thomson"]
+license = "BSD-3-Clause"
+description = "Shared low-level cfitsio helpers (pixel I/O, header editing, image creation) for the at*-rs FITS tools"
+repository = "https://github.com/AlecThomson/atfits-rs"
+documentation = "https://docs.rs/atfits-rs"
+readme = "README.md"
+
+[package.metadata.docs.rs]
+# docs.rs runs build scripts on a read-only source tree, so the `fitsio-src`
+# feature (cfitsio compiled from source) fails there. Its build image ships
+# libcfitsio-dev, so link the system library instead.
+no-default-features = true
+features = []
+
+[lib]
+name = "atfits_rs"
+path = "src/lib.rs"
+
+[features]
+# Off by default; consumers that compile cfitsio from source enable this (or
+# enable `fitsio/fitsio-src` directly — cargo unifies the shared fitsio crate).
+default = []
+fitsio-src = ["fitsio/fitsio-src"]
 
 [dependencies]
+# cfitsio linkage is controlled by the crate-level `fitsio-src` feature above.
+fitsio = { version = "0.21" }
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
