@@ -1,6 +1,8 @@
 [package]
 name = "atfits-rs"
-version = "0.1.0"
+# Placeholder. Real version is pinned at release time from the GitHub release
+# tag by CD (`cargo set-version`); see .github/workflows/cd.yml.
+version = "0.0.0"
 edition = "2024"
 authors = ["Alec Thomson"]
 license = "BSD-3-Clause"
