@@ -22,6 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # `cargo publish` runs a local verification build on this runner with the
+      # default (no fitsio-src) feature set, which links the system cfitsio.
+      # Install it here so verification succeeds the same way docs.rs/crates.io
+      # build the published crate.
+      - name: Install cfitsio
+        run: sudo apt-get update && sudo apt-get install -y libcfitsio-dev pkg-config
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
