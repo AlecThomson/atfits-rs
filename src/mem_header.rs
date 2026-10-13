@@ -70,7 +70,9 @@ pub fn extract_header_layout(fptr: &mut FitsFile, dims: &[usize]) -> Result<Cube
 fn set_naxis_card(header: &mut [u8], axis: usize, value: usize) -> Result<()> {
     let key = format!("NAXIS{axis}");
     let card = header
-        .chunks_exact_mut(80)
+        .as_chunks_mut::<80>()
+        .0
+        .iter_mut()
         .find(|c| c.starts_with(key.as_bytes()) && c[key.len()] == b' ')
         .ok_or_else(|| AtfitsError::Other(format!("{key} card not found in header")))?;
     // Fixed-format integers are right-justified in bytes 10..30.
