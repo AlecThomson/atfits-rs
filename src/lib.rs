@@ -27,10 +27,10 @@ pub mod path;
 pub mod pixel;
 
 pub use error::{AtfitsError, Result};
-pub use header::{HeaderGeom, TargetAxis, find_target_axis};
+pub use header::{HeaderGeom, TargetAxis, find_target_axis, spectral_unit_scale};
 pub use image::{
     bitpix_to_image_type, copy_header_only, copy_header_only_open, create_cube_open,
-    is_structural_keyword, resize_image,
+    is_scaling_keyword, is_structural_keyword, resize_image,
 };
 pub use keys::{
     delete_key, has_key, read_key_f64, read_key_string, update_key_f64, update_key_i64,
