@@ -1,5 +1,4 @@
-//! End-to-end sanity: create a cube from a 2D template, stream planes via the
-//! `CubeElem` section I/O, and read them back.
+//! Create cubes from a 2D template and read them back.
 use std::path::PathBuf;
 
 use atfits_rs::{
@@ -41,7 +40,6 @@ fn create_cube_and_roundtrip_planes() {
 
     {
         let mut out = create_cube_open(&tmpl, &cube, -32, &dims).unwrap();
-        // Non-structural template card must have carried over.
         update_key_f64(&mut out, "CRVAL3", 1.0e9).unwrap();
         for c in 0..nchan {
             let plane: Vec<f32> = (0..plane_elems).map(|i| (c * 100 + i) as f32).collect();
@@ -63,10 +61,7 @@ fn create_cube_and_roundtrip_planes() {
     assert_eq!(reffreq, 1.0e9);
 }
 
-/// The in-memory header builder must report the real cube shape even though it
-/// allocates only size-1 dummy axes (so it never materialises a cube-sized data
-/// buffer). Build the header, lay it down with raw I/O + a sparse data unit, and
-/// confirm cfitsio reads back the intended NAXISn.
+/// The memory header uses size-1 axes but must report the real shape.
 #[test]
 fn mem_header_reports_real_dims() {
     use std::fs::OpenOptions;
@@ -82,12 +77,9 @@ fn mem_header_reports_real_dims() {
     let mut fptr = create_mem_cube(&tmpl, -32, &dims).unwrap();
     let layout = extract_header_layout(&mut fptr, &dims).unwrap();
 
-    // Header is a whole number of 2880-byte blocks and the data unit starts right
-    // after it.
     assert_eq!(layout.datastart % 2880, 0);
     assert_eq!(layout.header.len() as u64, layout.datastart);
 
-    // Lay down the header and sparsely extend to the full (header + data) length.
     let plane_bytes = (size * size * 4) as u64;
     let data_bytes = plane_bytes * nchan as u64;
     let total = layout.datastart + data_bytes.div_ceil(2880) * 2880;
@@ -104,14 +96,12 @@ fn mem_header_reports_real_dims() {
         file.write_all(&[0]).unwrap();
     }
 
-    // cfitsio must agree on the shape we stamped into the dummy-axis header.
     let mut f = FitsFile::open(cube.to_str().unwrap()).unwrap();
     let hdu = f.primary_hdu().unwrap();
     let n1: i64 = hdu.read_key(&mut f, "NAXIS1").unwrap();
     let n2: i64 = hdu.read_key(&mut f, "NAXIS2").unwrap();
     let n3: i64 = hdu.read_key(&mut f, "NAXIS3").unwrap();
     assert_eq!((n1, n2, n3), (size as i64, size as i64, nchan as i64));
-    // Non-structural template card carried over.
     let reffreq: f64 = hdu.read_key(&mut f, "REFFREQ").unwrap();
     assert_eq!(reffreq, 1.0e9);
 }

@@ -1,15 +1,14 @@
-//! Pixel precision and monomorphic cfitsio section I/O.
+//! Pixel precision and section I/O on the primary image.
 use std::os::raw::{c_int, c_void};
 
 use fitsio::FitsFile;
-use fitsio::errors::check_status;
 use fitsio::hdu::HduInfo;
 use fitsio::images::ImageType;
-use fitsio::sys::LONGLONG;
+use fitsio::sys::{self, LONGLONG};
 
-use crate::error::{AtfitsError, Result};
+use crate::error::{AtfitsError, Result, ffcall};
 
-/// Pixel precision a cube is read/written in, derived from FITS `BITPIX`.
+/// Precision a cube is processed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelType {
     F32,
@@ -27,30 +26,55 @@ impl PixelType {
     }
 }
 
-/// Pixel element types a plane can be streamed in: `f32` or `f64`.
+/// Element types (`f32`, `f64`) for reading and writing pixel ranges.
 ///
-/// Sections are flat pixel ranges `start..end` of the primary image. Integer
-/// images are scaled by BSCALE/BZERO; pixels equal to BLANK read as NaN, and NaN
-/// is written back as BLANK (an error if the header has no BLANK).
+/// Ranges are flat pixel offsets `start..end` into the primary image. Integer
+/// images are scaled by BSCALE/BZERO; BLANK pixels read as NaN, and NaN is
+/// written as BLANK (an error if the header has no BLANK).
 pub trait CubeElem: Copy + Send + Sync + 'static {
-    /// FITS `BITPIX` written for this element type.
+    /// BITPIX of a float image of this type.
     const BITPIX: i64;
+    /// Read the whole primary image.
     fn read_full(fptr: &mut FitsFile) -> Result<Vec<Self>>;
+    /// Read pixels `start..end`.
     fn read_section(fptr: &mut FitsFile, start: usize, end: usize) -> Result<Vec<Self>>;
+    /// Write `data` to pixels `start..end`; `data.len()` must equal `end - start`.
     fn write_section(fptr: &mut FitsFile, start: usize, end: usize, data: &[Self]) -> Result<()>;
 }
 
-/// Primary image pixel count and whether it stores integers.
+/// Read plane `index` of the primary image, where a plane is `plane_len` pixels.
+pub fn read_plane<T: CubeElem>(
+    fptr: &mut FitsFile,
+    plane_len: usize,
+    index: usize,
+) -> Result<Vec<T>> {
+    let (start, end) = plane_range(plane_len, index)?;
+    T::read_section(fptr, start, end)
+}
+
+/// Write `data` as plane `index` of the primary image.
+pub fn write_plane<T: CubeElem>(fptr: &mut FitsFile, index: usize, data: &[T]) -> Result<()> {
+    let (start, end) = plane_range(data.len(), index)?;
+    T::write_section(fptr, start, end, data)
+}
+
+fn plane_range(plane_len: usize, index: usize) -> Result<(usize, usize)> {
+    plane_len
+        .checked_mul(index)
+        .and_then(|start| Some((start, start.checked_add(plane_len)?)))
+        .ok_or_else(|| AtfitsError::Other(format!("plane {index} overflows usize")))
+}
+
+/// Pixel count of the primary image and whether it stores integers.
 fn primary_image(fptr: &mut FitsFile) -> Result<(usize, bool)> {
-    let hdu = fptr.primary_hdu()?;
-    match hdu.info {
+    match fptr.primary_hdu()?.info {
         HduInfo::ImageInfo { shape, image_type } => {
-            let integer = !matches!(image_type, ImageType::Float | ImageType::Double);
             let npix = if shape.is_empty() {
                 0
             } else {
                 shape.iter().product()
             };
+            let integer = !matches!(image_type, ImageType::Float | ImageType::Double);
             Ok((npix, integer))
         }
         _ => Err(AtfitsError::Other("primary HDU is not an image".into())),
@@ -79,24 +103,21 @@ macro_rules! impl_cube_elem {
             fn read_section(fptr: &mut FitsFile, start: usize, end: usize) -> Result<Vec<Self>> {
                 let (npix, _) = primary_image(fptr)?;
                 check_range(start, end, npix)?;
-                let n = end - start;
-                let mut out: Vec<$t> = vec![0.0; n];
-                let mut nulval: $t = <$t>::NAN;
+                let mut out: Vec<$t> = vec![0.0; end - start];
+                let mut nulval = <$t>::NAN;
                 let mut anynul: c_int = 0;
-                let mut status = 0;
-                unsafe {
-                    fitsio::sys::ffgpv(
+                ffcall(|s| unsafe {
+                    sys::ffgpv(
                         fptr.as_raw(),
                         $code as c_int,
                         start as LONGLONG + 1,
-                        n as LONGLONG,
+                        out.len() as LONGLONG,
                         &mut nulval as *mut $t as *mut c_void,
                         out.as_mut_ptr() as *mut c_void,
                         &mut anynul,
-                        &mut status,
-                    );
-                }
-                check_status(status)?;
+                        s,
+                    )
+                })?;
                 Ok(out)
             }
 
@@ -115,42 +136,39 @@ macro_rules! impl_cube_elem {
                         data.len()
                     )));
                 }
-                let mut status = 0;
-                if integer && data.iter().any(|v| v.is_nan()) {
-                    // cfitsio matches nulls by equality, which never holds for NaN.
-                    let mut nulval: $t = <$t>::NEG_INFINITY;
-                    let mut buf: Vec<$t> = data
-                        .iter()
-                        .map(|&v| if v.is_nan() { nulval } else { v })
-                        .collect();
-                    unsafe {
-                        fitsio::sys::ffppn(
-                            fptr.as_raw(),
-                            $code as c_int,
-                            start as LONGLONG + 1,
-                            buf.len() as LONGLONG,
-                            buf.as_mut_ptr() as *mut c_void,
-                            &mut nulval as *mut $t as *mut c_void,
-                            &mut status,
-                        );
-                    }
-                } else {
-                    unsafe {
-                        fitsio::sys::ffppr(
+                if !(integer && data.iter().any(|v| v.is_nan())) {
+                    // cfitsio only reads `data`; the C API lacks const.
+                    return ffcall(|s| unsafe {
+                        sys::ffppr(
                             fptr.as_raw(),
                             $code as c_int,
                             start as LONGLONG + 1,
                             data.len() as LONGLONG,
                             data.as_ptr() as *mut c_void,
-                            &mut status,
-                        );
-                    }
+                            s,
+                        )
+                    });
                 }
-                check_status(status)?;
-                Ok(())
+                // cfitsio finds nulls by equality, which never holds for NaN.
+                let mut nulval = <$t>::NEG_INFINITY;
+                let mut buf: Vec<$t> = data
+                    .iter()
+                    .map(|&v| if v.is_nan() { nulval } else { v })
+                    .collect();
+                ffcall(|s| unsafe {
+                    sys::ffppn(
+                        fptr.as_raw(),
+                        $code as c_int,
+                        start as LONGLONG + 1,
+                        buf.len() as LONGLONG,
+                        buf.as_mut_ptr() as *mut c_void,
+                        &mut nulval as *mut $t as *mut c_void,
+                        s,
+                    )
+                })
             }
         }
     };
 }
-impl_cube_elem!(f32, -32, fitsio::sys::TFLOAT);
-impl_cube_elem!(f64, -64, fitsio::sys::TDOUBLE);
+impl_cube_elem!(f32, -32, sys::TFLOAT);
+impl_cube_elem!(f64, -64, sys::TDOUBLE);

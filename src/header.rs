@@ -1,33 +1,35 @@
-//! Header geometry and WCS axis lookup.
+//! Image geometry and WCS axis lookup.
 use std::path::Path;
 
 use fitsio::FitsFile;
 
 use crate::error::{AtfitsError, Result};
-use crate::keys::optional;
+use crate::keys::{key_f64, key_i64, key_string};
+use crate::path::utf8;
 
-/// Shape and pixel metadata of a FITS primary image, in FITS axis order
-/// (`dims[0]` = NAXIS1, the fastest-varying axis).
+/// Shape and BITPIX of an image, with `dims[i]` = NAXIS(i+1).
 #[derive(Debug, Clone)]
 pub struct HeaderGeom {
     pub naxis: usize,
-    /// `dims[i]` = NAXIS(i+1).
     pub dims: Vec<usize>,
     pub bitpix: i64,
 }
 
 impl HeaderGeom {
-    /// Read NAXIS, every NAXISn, and BITPIX from the primary HDU.
+    /// Read the primary image geometry of the file at `path`.
     pub fn read(path: &Path) -> Result<Self> {
-        let mut fptr = FitsFile::open(path.to_string_lossy().as_ref())?;
-        let hdu = fptr.primary_hdu()?;
-        let naxis: i64 = hdu.read_key(&mut fptr, "NAXIS")?;
-        let bitpix: i64 = hdu.read_key(&mut fptr, "BITPIX")?;
-        let mut dims = Vec::with_capacity(naxis as usize);
-        for i in 1..=naxis {
-            let n: i64 = hdu.read_key(&mut fptr, &format!("NAXIS{i}"))?;
-            dims.push(n as usize);
-        }
+        let mut fptr = FitsFile::open(utf8(path)?)?;
+        fptr.primary_hdu()?;
+        Self::from_file(&mut fptr)
+    }
+
+    /// Read the geometry of the current HDU.
+    pub fn from_file(fptr: &mut FitsFile) -> Result<Self> {
+        let naxis = required_i64(fptr, "NAXIS")?;
+        let bitpix = required_i64(fptr, "BITPIX")?;
+        let dims = (1..=naxis)
+            .map(|i| required_i64(fptr, &format!("NAXIS{i}")).map(|n| n as usize))
+            .collect::<Result<_>>()?;
         Ok(Self {
             naxis: naxis as usize,
             dims,
@@ -35,23 +37,27 @@ impl HeaderGeom {
         })
     }
 
-    /// Whether the image is two-dimensional (a single plane).
+    /// Whether the image is a single plane.
     pub fn is_2d(&self) -> bool {
         self.naxis == 2
     }
 
-    /// Number of pixels per plane = NAXIS1 × NAXIS2.
+    /// Pixels per plane, NAXIS1 * NAXIS2.
     pub fn plane_len(&self) -> usize {
-        self.dims.first().copied().unwrap_or(1) * self.dims.get(1).copied().unwrap_or(1)
+        self.dims.iter().take(2).product()
     }
 }
 
-/// Location of a target (FREQ/TIME) axis within a header's WCS.
+fn required_i64(fptr: &mut FitsFile, key: &str) -> Result<i64> {
+    key_i64(fptr, key)?.ok_or_else(|| AtfitsError::MissingKeyword(key.to_string()))
+}
+
+/// A WCS axis found by [`find_target_axis`].
 #[derive(Debug, Clone)]
 pub struct TargetAxis {
-    /// FITS axis number (1-based), e.g. 3 for NAXIS3.
+    /// 1-based FITS axis number, e.g. 3 for NAXIS3.
     pub fits_idx: usize,
-    /// numpy/array index (0-based, axis order reversed), as used by `np.take`.
+    /// 0-based index in C (numpy) axis order.
     pub array_idx: usize,
     pub ctype: String,
     /// CRPIXi, default 0.
@@ -70,44 +76,43 @@ impl TargetAxis {
     }
 }
 
-/// Search a header for the axis whose CTYPE contains `name` ("FREQ" or "TIME").
+/// Find the primary header axis whose CTYPE contains `name` ("FREQ" or "TIME").
 ///
 /// Missing CRPIX/CRVAL/CDELT take the FITS WCS defaults (0, 0, 1). Returns
 /// [`AtfitsError::TargetAxisMissing`] when no axis matches.
 pub fn find_target_axis(path: &Path, name: &str) -> Result<TargetAxis> {
-    let mut fptr = FitsFile::open(path.to_string_lossy().as_ref())?;
-    let hdu = fptr.primary_hdu()?;
-    let naxis: i64 = hdu.read_key(&mut fptr, "NAXIS")?;
+    let mut fptr = FitsFile::open(utf8(path)?)?;
+    fptr.primary_hdu()?;
+    find_target_axis_in(&mut fptr, name)
+}
 
+/// [`find_target_axis`] on the current HDU of an open file.
+pub fn find_target_axis_in(fptr: &mut FitsFile, name: &str) -> Result<TargetAxis> {
+    let naxis = required_i64(fptr, "NAXIS")? as usize;
     for axis in 1..=naxis {
-        let Some(ctype) = optional(hdu.read_key::<String>(&mut fptr, &format!("CTYPE{axis}")))?
-        else {
+        let Some(ctype) = key_string(fptr, &format!("CTYPE{axis}"))? else {
             continue;
         };
         if !ctype.contains(name) {
             continue;
         }
-        let mut key = |k: String| optional(hdu.read_key::<f64>(&mut fptr, &k));
-        let crpix = key(format!("CRPIX{axis}"))?.unwrap_or(0.0);
-        let crval = key(format!("CRVAL{axis}"))?.unwrap_or(0.0);
-        let cdelt = match key(format!("CD{axis}_{axis}"))? {
+        let cdelt = match key_f64(fptr, &format!("CD{axis}_{axis}"))? {
             Some(cd) => cd,
-            None => key(format!("CDELT{axis}"))?.unwrap_or(1.0),
+            None => key_f64(fptr, &format!("CDELT{axis}"))?.unwrap_or(1.0),
         };
-        let cunit = optional(hdu.read_key::<String>(&mut fptr, &format!("CUNIT{axis}")))?;
         return Ok(TargetAxis {
-            fits_idx: axis as usize,
-            array_idx: (naxis - axis) as usize,
-            ctype,
-            crpix,
-            crval,
+            fits_idx: axis,
+            array_idx: naxis - axis,
+            crpix: key_f64(fptr, &format!("CRPIX{axis}"))?.unwrap_or(0.0),
+            crval: key_f64(fptr, &format!("CRVAL{axis}"))?.unwrap_or(0.0),
             cdelt,
-            cunit,
+            cunit: key_string(fptr, &format!("CUNIT{axis}"))?,
+            ctype,
         });
     }
     Err(AtfitsError::TargetAxisMissing(format!(
         "No {name} axis found in WCS of {}",
-        path.display()
+        fptr.file_path().display()
     )))
 }
 

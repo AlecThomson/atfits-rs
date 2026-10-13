@@ -21,8 +21,7 @@ repos:
       - id: check-merge-conflict
       - id: mixed-line-ending
 
-  # cargo fmt / clippy as local hooks so they use the repo's toolchain and the
-  # fitsio-src feature (compiles cfitsio from source — no system libcfitsio).
+  # Local hooks use the repo's toolchain; clippy builds cfitsio from source.
   - repo: local
     hooks:
       - id: cargo-fmt

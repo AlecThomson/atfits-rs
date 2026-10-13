@@ -1,18 +1,17 @@
-//! Error type shared by the low-level cfitsio helpers.
-//!
-//! Consuming crates wrap this in their own error enum with
-//! `#[error(...)] Atfits(#[from] atfits_rs::AtfitsError)` (or map individual
-//! variants), so a `?` on any helper here flows into their `Result`.
+//! Error type for the helpers.
+use std::ffi::CStr;
+use std::os::raw::c_char;
+
 use thiserror::Error;
 
-/// Errors raised by the shared cfitsio helpers.
+/// Errors raised by the helpers.
 #[derive(Debug, Error)]
 pub enum AtfitsError {
-    /// Underlying cfitsio error.
+    /// cfitsio or `fitsio` error.
     #[error("FITS I/O error: {0}")]
     Fits(#[from] fitsio::errors::Error),
 
-    /// Filesystem I/O error.
+    /// Filesystem error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -20,7 +19,7 @@ pub enum AtfitsError {
     #[error("missing header keyword: {0}")]
     MissingKeyword(String),
 
-    /// A requested target (e.g. FREQ/TIME) axis was not found in the WCS.
+    /// No WCS axis matched the requested CTYPE (e.g. FREQ or TIME).
     #[error("target axis missing: {0}")]
     TargetAxisMissing(String),
 
@@ -28,10 +27,34 @@ pub enum AtfitsError {
     #[error("unsupported NAXIS={0}")]
     UnsupportedNaxis(i64),
 
-    /// Catch-all for invariant violations.
+    /// Any other failure, such as a bad argument or malformed header.
     #[error("{0}")]
     Other(String),
 }
 
-/// Convenience result alias for the shared helpers.
+/// Result alias for the helpers.
 pub type Result<T> = std::result::Result<T, AtfitsError>;
+
+/// cfitsio's description of a status code, e.g. 202 gives "keyword not found in header".
+pub fn status_message(status: i32) -> String {
+    let mut buf = [0 as c_char; 31];
+    unsafe {
+        fitsio::sys::ffgerr(status, buf.as_mut_ptr());
+        CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned()
+    }
+}
+
+/// Whether the linked cfitsio was built thread safe (`--enable-reentrant`).
+///
+/// The `fitsio-src` build always is. A system library may not be.
+pub fn is_reentrant() -> bool {
+    unsafe { fitsio::sys::fits_is_reentrant() != 0 }
+}
+
+/// Run a cfitsio call that reports through a status pointer.
+pub(crate) fn ffcall(f: impl FnOnce(&mut i32) -> i32) -> Result<()> {
+    let mut status = 0;
+    f(&mut status);
+    fitsio::errors::check_status(status)?;
+    Ok(())
+}
