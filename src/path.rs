@@ -14,10 +14,13 @@ pub fn output_path(
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
     let ext = input.extension().unwrap_or_default().to_string_lossy();
 
-    let filename = match suffix {
-        Some(s) => format!("{stem}.{s}.{ext}"),
-        None => format!("{stem}.{ext}"),
-    };
+    let mut filename = stem.into_owned();
+    if let Some(s) = suffix {
+        filename = format!("{filename}.{s}");
+    }
+    if !ext.is_empty() {
+        filename = format!("{filename}.{ext}");
+    }
     let filename = match prefix {
         Some(p) => format!("{p}{filename}"),
         None => filename,

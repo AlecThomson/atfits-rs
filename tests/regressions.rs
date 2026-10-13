@@ -265,3 +265,16 @@ fn target_axis_uses_wcs_defaults_and_cd() {
     assert_eq!(spectral_unit_scale(Some("GHZ")), Some(1e9));
     assert_eq!(spectral_unit_scale(Some("m/s")), None);
 }
+
+#[test]
+fn output_path_without_extension() {
+    let p = output_path(Path::new("dir/img"), Some("smooth"), None, None);
+    assert_eq!(p, Path::new("dir/img.smooth"));
+    let p = output_path(
+        Path::new("img.fits"),
+        Some("sm"),
+        Some("x_"),
+        Some(Path::new("o")),
+    );
+    assert_eq!(p, Path::new("o/x_img.sm.fits"));
+}
