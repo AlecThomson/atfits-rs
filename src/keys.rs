@@ -1,164 +1,159 @@
-//! Raw cfitsio header keyword editing and reading.
+//! Header keyword editing and reading.
 //!
-//! `fitsio`'s `write_key` calls `ffpky*`, which *appends* a card even when the
-//! keyword already exists, leaving duplicates that cfitsio then reads stale. The
-//! `update_key_*` helpers here use `ffuky*` (`fits_update_key`) so a rewritten
-//! keyword (CRVAL/CDELT/CTYPE/BMAJ/…) overwrites in place.
+//! `fitsio`'s `write_key` calls `ffpky*`, which appends a duplicate card when the
+//! keyword exists. The `update_key_*` functions use `ffuky*`, which replaces it.
 use std::ffi::CString;
 use std::os::raw::c_int;
 use std::path::Path;
+use std::ptr;
 
 use fitsio::FitsFile;
-use fitsio::errors::check_status;
+use fitsio::headers::ReadsKey;
+use fitsio::sys;
 
-use crate::error::{AtfitsError, Result};
+use crate::error::{AtfitsError, Result, ffcall};
 
-const KEY_NO_EXIST: i32 = fitsio::sys::KEY_NO_EXIST as i32;
-
-/// Significant digits needed for `value` to survive a decimal round trip.
-fn round_trip_digits(value: f64) -> usize {
-    (15..17)
-        .find(|&d| format!("{value:.*e}", d - 1).parse::<f64>() == Ok(value))
-        .unwrap_or(17)
-}
-
-/// `Ok(None)` for a missing keyword, otherwise the read result.
-pub(crate) fn optional<T>(r: fitsio::errors::Result<T>) -> Result<Option<T>> {
-    match r {
-        Ok(v) => Ok(Some(v)),
-        Err(fitsio::errors::Error::Fits(e)) if e.status == KEY_NO_EXIST => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
+const KEY_NO_EXIST: i32 = sys::KEY_NO_EXIST as i32;
 
 pub(crate) fn cstr(s: &str) -> Result<CString> {
     CString::new(s).map_err(|e| AtfitsError::Other(format!("invalid C string {s:?}: {e}")))
 }
 
-/// `fits_update_key_lng` — update/insert an integer keyword in place.
+fn is_missing_key(e: &AtfitsError) -> bool {
+    matches!(e, AtfitsError::Fits(fitsio::errors::Error::Fits(f)) if f.status == KEY_NO_EXIST)
+}
+
+/// `Ok(None)` for a missing keyword, otherwise the read result.
+pub(crate) fn optional<T>(r: fitsio::errors::Result<T>) -> Result<Option<T>> {
+    match r.map_err(AtfitsError::from) {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if is_missing_key(&e) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Significant digits needed for `value` to survive a decimal round trip.
+fn round_trip_digits(value: f64) -> c_int {
+    (15..17)
+        .find(|&d| format!("{value:.*e}", d as usize - 1).parse::<f64>() == Ok(value))
+        .unwrap_or(17)
+}
+
+/// Set an integer keyword, replacing any existing card.
 pub fn update_key_i64(fptr: &mut FitsFile, name: &str, value: i64) -> Result<()> {
-    let c_name = cstr(name)?;
-    let mut status = 0;
-    unsafe {
-        fitsio::sys::ffukyj(
-            fptr.as_raw(),
-            c_name.as_ptr(),
-            value,
-            std::ptr::null_mut(),
-            &mut status,
-        );
-    }
-    check_status(status)?;
-    Ok(())
+    let name = cstr(name)?;
+    ffcall(|s| unsafe { sys::ffukyj(fptr.as_raw(), name.as_ptr(), value, ptr::null_mut(), s) })
 }
 
-/// `fits_update_key_dbl` — update/insert a double keyword in place.
+/// Set a float keyword, replacing any existing card.
 ///
-/// Written with the fewest significant digits (15 to 17) that read back exactly.
+/// Uses the fewest significant digits (15 to 17) that read back exactly.
 pub fn update_key_f64(fptr: &mut FitsFile, name: &str, value: f64) -> Result<()> {
-    let c_name = cstr(name)?;
-    let mut status = 0;
-    unsafe {
-        fitsio::sys::ffukyd(
+    let name = cstr(name)?;
+    let decimals = -round_trip_digits(value);
+    ffcall(|s| unsafe {
+        sys::ffukyd(
             fptr.as_raw(),
-            c_name.as_ptr(),
+            name.as_ptr(),
             value,
-            -(round_trip_digits(value) as c_int),
-            std::ptr::null_mut(),
-            &mut status,
-        );
-    }
-    check_status(status)?;
-    Ok(())
+            decimals,
+            ptr::null_mut(),
+            s,
+        )
+    })
 }
 
-/// `fits_update_key_str` — update/insert a string keyword in place.
+/// Set a string keyword, replacing any existing card.
 pub fn update_key_str(fptr: &mut FitsFile, name: &str, value: &str) -> Result<()> {
-    let c_name = cstr(name)?;
-    let c_val = cstr(value)?;
-    let mut status = 0;
-    unsafe {
-        fitsio::sys::ffukys(
+    let name = cstr(name)?;
+    let value = cstr(value)?;
+    ffcall(|s| unsafe {
+        sys::ffukys(
             fptr.as_raw(),
-            c_name.as_ptr(),
-            c_val.as_ptr(),
-            std::ptr::null_mut(),
-            &mut status,
-        );
-    }
-    check_status(status)?;
-    Ok(())
+            name.as_ptr(),
+            value.as_ptr(),
+            ptr::null_mut(),
+            s,
+        )
+    })
 }
 
-/// `fits_update_key_log` — update/insert a logical (boolean) keyword in place.
+/// Set a logical (`T`/`F`) keyword, replacing any existing card.
 ///
-/// FITS logicals are unquoted `T`/`F`; casacore/CARTA read keywords like
-/// `CASAMBM` with `asBool`, which throws on a quoted string — always write a
-/// true logical.
+/// casacore reads flags such as CASAMBM as logicals and rejects quoted strings.
 pub fn update_key_logical(fptr: &mut FitsFile, name: &str, value: bool) -> Result<()> {
-    let c_name = cstr(name)?;
-    let mut status = 0;
-    unsafe {
-        fitsio::sys::ffukyl(
+    let name = cstr(name)?;
+    ffcall(|s| unsafe {
+        sys::ffukyl(
             fptr.as_raw(),
-            c_name.as_ptr(),
-            value as std::os::raw::c_int,
-            std::ptr::null_mut(),
-            &mut status,
-        );
-    }
-    check_status(status)?;
-    Ok(())
+            name.as_ptr(),
+            value.into(),
+            ptr::null_mut(),
+            s,
+        )
+    })
 }
 
-/// `fits_delete_key` — remove a keyword if present (absence is not an error).
+/// Delete a keyword. A missing keyword is not an error.
 pub fn delete_key(fptr: &mut FitsFile, name: &str) -> Result<()> {
-    let c_name = cstr(name)?;
-    let mut status = 0;
-    unsafe {
-        fitsio::sys::ffdkey(fptr.as_raw(), c_name.as_ptr(), &mut status);
+    let name = cstr(name)?;
+    match ffcall(|s| unsafe { sys::ffdkey(fptr.as_raw(), name.as_ptr(), s) }) {
+        Err(e) if is_missing_key(&e) => Ok(()),
+        r => r,
     }
-    // KEY_NO_EXIST (202) is fine — nothing to delete.
-    if status == KEY_NO_EXIST {
-        return Ok(());
-    }
-    check_status(status)?;
-    Ok(())
 }
 
-/// `fits_write_comment` — append a COMMENT card.
+/// Append a COMMENT card.
 pub fn write_comment(fptr: &mut FitsFile, comment: &str) -> Result<()> {
-    let c_comment = cstr(comment)?;
-    let mut status = 0;
-    unsafe {
-        fitsio::sys::ffpcom(fptr.as_raw(), c_comment.as_ptr(), &mut status);
-    }
-    check_status(status)?;
-    Ok(())
+    let comment = cstr(comment)?;
+    ffcall(|s| unsafe { sys::ffpcom(fptr.as_raw(), comment.as_ptr(), s) })
 }
 
-// ── Convenience readers (open by path) ────────────────────────────────────────
+/// Read a keyword of the current HDU as `i64`, or `None` if it is absent.
+pub fn key_i64(fptr: &mut FitsFile, name: &str) -> Result<Option<i64>> {
+    optional(i64::read_key(fptr, name))
+}
 
-/// Read a primary header keyword as `f64`, or `None` if it is absent.
+/// Read a keyword of the current HDU as `f64`, or `None` if it is absent.
 ///
 /// A value that is not a number is an error.
+pub fn key_f64(fptr: &mut FitsFile, name: &str) -> Result<Option<f64>> {
+    optional(f64::read_key(fptr, name))
+}
+
+/// Read a keyword of the current HDU as a string, or `None` if it is absent.
+pub fn key_string(fptr: &mut FitsFile, name: &str) -> Result<Option<String>> {
+    optional(String::read_key(fptr, name))
+}
+
+/// Whether the current HDU has the keyword, whatever its value type.
+pub fn key_exists(fptr: &mut FitsFile, name: &str) -> Result<bool> {
+    let name = cstr(name)?;
+    let mut card = [0; 81];
+    match ffcall(|s| unsafe { sys::ffgcrd(fptr.as_raw(), name.as_ptr(), card.as_mut_ptr(), s) }) {
+        Ok(()) => Ok(true),
+        Err(e) if is_missing_key(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+fn open_primary(path: &Path) -> Result<FitsFile> {
+    let mut fptr = FitsFile::open(path)?;
+    fptr.primary_hdu()?;
+    Ok(fptr)
+}
+
+/// [`key_f64`] on the primary header of the file at `path`.
 pub fn read_key_f64(path: &Path, key: &str) -> Result<Option<f64>> {
-    let mut fptr = FitsFile::open(path.to_string_lossy().as_ref())?;
-    let hdu = fptr.primary_hdu()?;
-    optional(hdu.read_key::<f64>(&mut fptr, key))
+    key_f64(&mut open_primary(path)?, key)
 }
 
-/// Read a primary header keyword as `String`, or `None` if it is absent.
+/// [`key_string`] on the primary header of the file at `path`.
 pub fn read_key_string(path: &Path, key: &str) -> Result<Option<String>> {
-    let mut fptr = FitsFile::open(path.to_string_lossy().as_ref())?;
-    let hdu = fptr.primary_hdu()?;
-    optional(hdu.read_key::<String>(&mut fptr, key))
+    key_string(&mut open_primary(path)?, key)
 }
 
-/// True if the keyword is present in the primary header.
+/// [`key_exists`] on the primary header of the file at `path`.
 pub fn has_key(path: &Path, key: &str) -> Result<bool> {
-    let mut fptr = FitsFile::open(path.to_string_lossy().as_ref())?;
-    let hdu = fptr.primary_hdu()?;
-    Ok(hdu.read_key::<String>(&mut fptr, key).is_ok()
-        || hdu.read_key::<f64>(&mut fptr, key).is_ok())
+    key_exists(&mut open_primary(path)?, key)
 }
