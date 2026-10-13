@@ -4,25 +4,20 @@
 [![crates.io](https://img.shields.io/crates/v/atfits-rs.svg)](https://crates.io/crates/atfits-rs)
 [![docs.rs](https://img.shields.io/docsrs/atfits-rs)](https://docs.rs/atfits-rs)
 
-Shared low-level [cfitsio](https://heasarc.gsfc.nasa.gov/fitsio/) helpers for the
-`at*-rs` family of FITS tools ([`fitscube-rs`](https://github.com/AlecThomson/fitscube-rs),
-[`convolve-rs`](https://github.com/AlecThomson/convolve-rs), …).
+[cfitsio](https://heasarc.gsfc.nasa.gov/fitsio/) helpers shared by
+[`fitscube-rs`](https://github.com/AlecThomson/fitscube-rs) and
+[`convolve-rs`](https://github.com/AlecThomson/convolve-rs):
 
-These are the project-agnostic mechanics that are easy to get subtly wrong
-against cfitsio, factored out so each tool shares one tested implementation:
-
-- **`PixelType` / `CubeElem`** — pixel precision (`f32`/`f64`, from `BITPIX`) and
-  monomorphic section read/write.
-- **`keys`** — update-*in-place* keyword editing via `ffuky*` (cfitsio's `ffpky*`
-  appends duplicate cards) plus convenience readers.
-- **`header`** — `HeaderGeom` (shape/BITPIX) and WCS `find_target_axis`.
-- **`image`** — image-HDU creation/resize and header-only copying, including
-  `create_cube_open`: the single-open-handle pattern that writes the data unit
-  once instead of a doubled zero-fill pass on close.
-- **`output_path`** — output-path construction.
-
-Domain logic (beams, combine/extract, convolution, spectral specs) stays in the
-individual crates.
+- `PixelType`, `CubeElem`, `read_plane`, `write_plane`: `f32`/`f64` pixel I/O,
+  with BLANK read as NaN and NaN written as BLANK.
+- `keys`: keyword updates that replace the existing card (`fitsio`'s
+  `write_key` appends a duplicate), and readers that tell a missing keyword
+  from a malformed one.
+- `header`: image geometry and WCS axis lookup.
+- `image`: image creation, resizing and header-only copies.
+- `mem_header`: build a cube header in memory and write the data unit with
+  plain file I/O.
+- `output_path`: output file names.
 
 ## Install
 
@@ -31,70 +26,50 @@ individual crates.
 atfits-rs = "1"
 ```
 
-## Features
+The `fitsio-src` feature compiles cfitsio from source, which needs only a C
+compiler. Without it the system cfitsio is linked.
 
-- `fitsio-src` — compile cfitsio from source (needs only a C compiler). Off by
-  default; consumers that build wheels enable it. Without it, the system cfitsio
-  is linked.
-
-  ```toml
-  atfits-rs = { version = "1", features = ["fitsio-src"] }
-  ```
+```toml
+atfits-rs = { version = "1", features = ["fitsio-src"] }
+```
 
 ## Example
 
-Create a cube from a 2D template, stream planes via `CubeElem` section I/O, then
-read them back:
+Create a cube from a 2D template, write each plane, then read the cube back:
 
 ```rust
-use atfits_rs::{CubeElem, create_cube_open, update_key_f64};
+use atfits_rs::{CubeElem, create_cube_open, update_key_f64, write_plane};
 use fitsio::FitsFile;
 
-let dims = vec![size, size, nchan]; // FITS axis order: NAXIS1, NAXIS2, NAXIS3
-let plane_elems = size * size;
-
-// Single open handle — writes the data unit once, no doubled zero-fill on close.
+let dims = [size, size, nchan]; // NAXIS1, NAXIS2, NAXIS3
 let mut out = create_cube_open(&template, &cube_path, -32, &dims)?;
-update_key_f64(&mut out, "CRVAL3", 1.0e9)?; // ffuky* — updates in place
-
+update_key_f64(&mut out, "CRVAL3", 1.0e9)?;
 for c in 0..nchan {
-    let plane: Vec<f32> = (0..plane_elems).map(|i| (c * 100 + i) as f32).collect();
-    let start = c * plane_elems;
-    f32::write_section(&mut out, start, start + plane_elems, &plane)?;
+    write_plane(&mut out, c, &vec![c as f32; size * size])?;
 }
+drop(out);
 
-// Read back.
-let mut f = FitsFile::open(cube_path.to_str().unwrap())?;
+let mut f = FitsFile::open(&cube_path)?;
 let all = f32::read_full(&mut f)?;
-# Ok::<(), atfits_rs::AtfitsError>(())
 ```
 
-## Docs
+## Threads
 
-Full API reference: <https://docs.rs/atfits-rs>. Build locally with:
+A `FitsFile` must stay on the thread that opened it. Threads may each open
+their own handle when cfitsio is reentrant, which the `fitsio-src` build is;
+`is_reentrant()` checks a system library. Write a given file from one handle
+only.
+
+## Development
 
 ```sh
+cargo test --features fitsio-src
+prek run --all-files     # or: pre-commit run --all-files
 cargo doc --no-deps --features fitsio-src --open
 ```
 
-## Contributing
-
-Lint and formatting run via [pre-commit](https://pre-commit.com) hooks
-(`cargo fmt`, `cargo clippy`, plus generic checks). CI runs the same hooks with
-[prek](https://github.com/j178/prek), a fast Rust reimplementation — install
-either:
-
-```sh
-# prek (Rust, recommended)
-cargo install prek
-prek install            # install the git hook
-prek run --all-files    # run against the whole tree
-
-# or pre-commit (Python)
-pip install pre-commit
-pre-commit install
-pre-commit run --all-files
-```
+CI runs the same hooks (`cargo fmt`, `cargo clippy`, generic checks) with
+[prek](https://github.com/j178/prek).
 
 ## License
 
