@@ -4,6 +4,7 @@ use std::path::Path;
 use fitsio::FitsFile;
 
 use crate::error::{AtfitsError, Result};
+use crate::keys::optional;
 
 /// Shape and pixel metadata of a FITS primary image, in FITS axis order
 /// (`dims[0]` = NAXIS1, the fastest-varying axis).
@@ -53,49 +54,83 @@ pub struct TargetAxis {
     /// numpy/array index (0-based, axis order reversed), as used by `np.take`.
     pub array_idx: usize,
     pub ctype: String,
+    /// CRPIXi, default 0.
     pub crpix: f64,
+    /// CRVALi, default 0.
     pub crval: f64,
+    /// CDi_i if present, else CDELTi, else 1. PCi_j is not applied.
     pub cdelt: f64,
     pub cunit: Option<String>,
 }
 
+impl TargetAxis {
+    /// World coordinate of 1-based pixel `pix` along this axis, in CUNIT.
+    pub fn world(&self, pix: f64) -> f64 {
+        self.crval + (pix - self.crpix) * self.cdelt
+    }
+}
+
 /// Search a header for the axis whose CTYPE contains `name` ("FREQ" or "TIME").
 ///
-/// Returns [`AtfitsError::TargetAxisMissing`] when absent.
+/// Missing CRPIX/CRVAL/CDELT take the FITS WCS defaults (0, 0, 1). Returns
+/// [`AtfitsError::TargetAxisMissing`] when no axis matches.
 pub fn find_target_axis(path: &Path, name: &str) -> Result<TargetAxis> {
     let mut fptr = FitsFile::open(path.to_string_lossy().as_ref())?;
     let hdu = fptr.primary_hdu()?;
     let naxis: i64 = hdu.read_key(&mut fptr, "NAXIS")?;
 
     for axis in 1..=naxis {
-        let ctype: String = match hdu.read_key(&mut fptr, &format!("CTYPE{axis}")) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Some(ctype) = optional(hdu.read_key::<String>(&mut fptr, &format!("CTYPE{axis}")))?
+        else {
+            continue;
         };
-        if ctype.contains(name) {
-            let crpix: f64 = hdu
-                .read_key(&mut fptr, &format!("CRPIX{axis}"))
-                .unwrap_or(1.0);
-            let crval: f64 = hdu
-                .read_key(&mut fptr, &format!("CRVAL{axis}"))
-                .unwrap_or(0.0);
-            let cdelt: f64 = hdu
-                .read_key(&mut fptr, &format!("CDELT{axis}"))
-                .unwrap_or(1.0);
-            let cunit: Option<String> = hdu.read_key(&mut fptr, &format!("CUNIT{axis}")).ok();
-            return Ok(TargetAxis {
-                fits_idx: axis as usize,
-                array_idx: (naxis - axis) as usize,
-                ctype,
-                crpix,
-                crval,
-                cdelt,
-                cunit,
-            });
+        if !ctype.contains(name) {
+            continue;
         }
+        let mut key = |k: String| optional(hdu.read_key::<f64>(&mut fptr, &k));
+        let crpix = key(format!("CRPIX{axis}"))?.unwrap_or(0.0);
+        let crval = key(format!("CRVAL{axis}"))?.unwrap_or(0.0);
+        let cdelt = match key(format!("CD{axis}_{axis}"))? {
+            Some(cd) => cd,
+            None => key(format!("CDELT{axis}"))?.unwrap_or(1.0),
+        };
+        let cunit = optional(hdu.read_key::<String>(&mut fptr, &format!("CUNIT{axis}")))?;
+        return Ok(TargetAxis {
+            fits_idx: axis as usize,
+            array_idx: (naxis - axis) as usize,
+            ctype,
+            crpix,
+            crval,
+            cdelt,
+            cunit,
+        });
     }
     Err(AtfitsError::TargetAxisMissing(format!(
         "No {name} axis found in WCS of {}",
         path.display()
     )))
+}
+
+/// Factor converting a frequency or time unit to Hz or seconds.
+///
+/// `None` (no CUNIT) means the SI default and gives 1. Case is ignored, so
+/// "MHZ" is megahertz. Returns `None` for units it does not know.
+pub fn spectral_unit_scale(unit: Option<&str>) -> Option<f64> {
+    let Some(unit) = unit else {
+        return Some(1.0);
+    };
+    let scale = match unit.trim().to_ascii_lowercase().as_str() {
+        "" | "hz" | "s" => 1.0,
+        "khz" => 1e3,
+        "mhz" => 1e6,
+        "ghz" => 1e9,
+        "thz" => 1e12,
+        "ms" => 1e-3,
+        "us" => 1e-6,
+        "min" => 60.0,
+        "h" => 3600.0,
+        "d" => 86400.0,
+        _ => return None,
+    };
+    Some(scale)
 }

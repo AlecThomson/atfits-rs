@@ -27,7 +27,7 @@ pub mod path;
 pub mod pixel;
 
 pub use error::{AtfitsError, Result};
-pub use header::{HeaderGeom, TargetAxis, find_target_axis};
+pub use header::{HeaderGeom, TargetAxis, find_target_axis, spectral_unit_scale};
 pub use image::{
     bitpix_to_image_type, copy_header_only, copy_header_only_open, create_cube_open,
     is_scaling_keyword, is_structural_keyword, resize_image,

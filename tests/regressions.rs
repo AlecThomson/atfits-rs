@@ -248,3 +248,20 @@ fn read_key_distinguishes_missing_from_malformed() {
     assert_eq!(read_key_string(&path, "NOPE").unwrap(), None);
     assert!(read_key_f64(&path, "WORD").is_err());
 }
+
+#[test]
+fn target_axis_uses_wcs_defaults_and_cd() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = int_cube(dir.path());
+    let axis = find_target_axis(&path, "FREQ").unwrap();
+    assert_eq!(axis.fits_idx, 3);
+    assert_eq!(axis.array_idx, 0);
+    assert_eq!(axis.crpix, 0.0);
+    assert_eq!(axis.cdelt, 1.0e6);
+    assert_eq!(axis.world(1.0), 1.0e9 + 1.0e6);
+
+    assert_eq!(spectral_unit_scale(None), Some(1.0));
+    assert_eq!(spectral_unit_scale(Some("MHz")), Some(1e6));
+    assert_eq!(spectral_unit_scale(Some("GHZ")), Some(1e9));
+    assert_eq!(spectral_unit_scale(Some("m/s")), None);
+}
