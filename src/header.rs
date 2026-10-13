@@ -5,6 +5,7 @@ use fitsio::FitsFile;
 
 use crate::error::{AtfitsError, Result};
 use crate::keys::{key_f64, key_i64, key_string};
+use crate::path::utf8;
 
 /// Shape and BITPIX of an image, with `dims[i]` = NAXIS(i+1).
 #[derive(Debug, Clone)]
@@ -17,7 +18,7 @@ pub struct HeaderGeom {
 impl HeaderGeom {
     /// Read the primary image geometry of the file at `path`.
     pub fn read(path: &Path) -> Result<Self> {
-        let mut fptr = FitsFile::open(path)?;
+        let mut fptr = FitsFile::open(utf8(path)?)?;
         fptr.primary_hdu()?;
         Self::from_file(&mut fptr)
     }
@@ -80,7 +81,7 @@ impl TargetAxis {
 /// Missing CRPIX/CRVAL/CDELT take the FITS WCS defaults (0, 0, 1). Returns
 /// [`AtfitsError::TargetAxisMissing`] when no axis matches.
 pub fn find_target_axis(path: &Path, name: &str) -> Result<TargetAxis> {
-    let mut fptr = FitsFile::open(path)?;
+    let mut fptr = FitsFile::open(utf8(path)?)?;
     fptr.primary_hdu()?;
     find_target_axis_in(&mut fptr, name)
 }

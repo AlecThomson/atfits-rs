@@ -12,6 +12,7 @@ use fitsio::headers::ReadsKey;
 use fitsio::sys;
 
 use crate::error::{AtfitsError, Result, ffcall};
+use crate::path::utf8;
 
 const KEY_NO_EXIST: i32 = sys::KEY_NO_EXIST as i32;
 
@@ -138,7 +139,7 @@ pub fn key_exists(fptr: &mut FitsFile, name: &str) -> Result<bool> {
 }
 
 fn open_primary(path: &Path) -> Result<FitsFile> {
-    let mut fptr = FitsFile::open(path)?;
+    let mut fptr = FitsFile::open(utf8(path)?)?;
     fptr.primary_hdu()?;
     Ok(fptr)
 }
