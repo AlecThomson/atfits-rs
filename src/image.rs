@@ -1,8 +1,12 @@
 //! Image-HDU creation, resizing, and header-only copying.
+use std::ffi::{CStr, CString};
+use std::io::Write;
+use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
 
 use fitsio::FitsFile;
 use fitsio::errors::check_status;
+use fitsio::sys::LONGLONG;
 
 use crate::error::{AtfitsError, Result};
 use crate::keys::cstr;
@@ -29,22 +33,64 @@ pub fn resize_image(fptr: &mut FitsFile, bitpix: i64, dims: &[usize]) -> Result<
     Ok(())
 }
 
-/// Keywords that describe the on-disk array structure; these are set by
-/// `fits_create_img` for a new image and must NOT be copied from a template.
+/// Keywords fixed by the array layout, which a new image writes itself:
+/// SIMPLE, BITPIX, NAXIS, NAXISn, EXTEND, PCOUNT, GCOUNT and END.
 pub fn is_structural_keyword(name: &str) -> bool {
     matches!(
         name,
-        "SIMPLE"
-            | "BITPIX"
-            | "NAXIS"
-            | "EXTEND"
-            | "PCOUNT"
-            | "GCOUNT"
-            | "END"
-            | "BSCALE"
-            | "BZERO"
-            | "BLANK"
-    ) || (name.starts_with("NAXIS") && name[5..].chars().all(|c| c.is_ascii_digit()))
+        "SIMPLE" | "BITPIX" | "NAXIS" | "EXTEND" | "PCOUNT" | "GCOUNT" | "END"
+    ) || name
+        .strip_prefix("NAXIS")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()))
+}
+
+/// BSCALE, BZERO and BLANK: meaningful only for integer images.
+pub fn is_scaling_keyword(name: &str) -> bool {
+    matches!(name, "BSCALE" | "BZERO" | "BLANK")
+}
+
+/// Whether a template card belongs in a new image of type `bitpix`.
+///
+/// Checksums are dropped because they describe the template's data, not ours.
+fn keep_template_card(name: &str, bitpix: i64) -> bool {
+    !(is_structural_keyword(name)
+        || matches!(name, "CHECKSUM" | "DATASUM")
+        || (bitpix < 0 && is_scaling_keyword(name)))
+}
+
+/// Append every card of `src`'s current header that [`keep_template_card`]
+/// accepts to `dst`'s current header.
+pub(crate) fn copy_template_cards(
+    src: &mut FitsFile,
+    dst: &mut FitsFile,
+    bitpix: i64,
+) -> Result<()> {
+    let mut status = 0;
+    let mut nkeys: c_int = 0;
+    let mut morekeys: c_int = 0;
+    unsafe { fitsio::sys::ffghsp(src.as_raw(), &mut nkeys, &mut morekeys, &mut status) };
+    check_status(status)?;
+
+    let mut card = [0 as c_char; 81];
+    for i in 1..=nkeys {
+        unsafe { fitsio::sys::ffgrec(src.as_raw(), i, card.as_mut_ptr(), &mut status) };
+        check_status(status)?;
+        let name = card_name(unsafe { CStr::from_ptr(card.as_ptr()) }.to_bytes());
+        if keep_template_card(name, bitpix) {
+            unsafe { fitsio::sys::ffprec(dst.as_raw(), card.as_ptr(), &mut status) };
+            check_status(status)?;
+        }
+    }
+    Ok(())
+}
+
+/// Keyword name of a raw 80-byte card (columns 1-8, or up to `=` for HIERARCH).
+fn card_name(card: &[u8]) -> &str {
+    let end = card
+        .iter()
+        .position(|&b| b == b' ' || b == b'=')
+        .unwrap_or(card.len());
+    std::str::from_utf8(&card[..end]).unwrap_or("")
 }
 
 /// Map a FITS `BITPIX` to the `fitsio` image element type.
@@ -60,74 +106,128 @@ pub fn bitpix_to_image_type(bitpix: i64) -> fitsio::images::ImageType {
     }
 }
 
-/// Refuse to clobber the input: this module deletes `output` before recreating
-/// it, so if `output` resolves to `input` (an empty suffix, or a symlink) the
-/// source image would be destroyed. `canonicalize` only succeeds for paths that
-/// exist, so a brand-new output simply skips the check.
+/// Error if `output` is the same file as `input`, since callers delete `output`
+/// before writing it.
 fn refuse_input_clobber(input: &Path, output: &Path) -> Result<()> {
-    if let (Ok(in_canon), Ok(out_canon)) = (input.canonicalize(), output.canonicalize())
-        && in_canon == out_canon
-    {
+    if same_file(input, output) {
         return Err(AtfitsError::Other(format!(
-            "output {} resolves to the input image",
+            "output {} is the input image",
             output.display()
         )));
     }
     Ok(())
 }
 
-/// Create `output` from the primary-HDU header of `input` and return the
-/// **open** FITS handle (no pixel data written yet).
-///
-/// Uses cfitsio `fits_create_file` (ffinit) + `fits_copy_header` (ffcphd): the
-/// data unit is defined by the copied NAXIS keywords but is *not* written until
-/// the handle is closed. We cannot use `FitsFile::create().open()` here — that
-/// eagerly writes a default empty (NAXIS=0) primary HDU, and ffcphd then copies
-/// *nothing* into it, leaving a zero-dimensional image (writing pixels later
-/// fails with the misleading cfitsio error 302).
-///
-/// Keeping the handle open lets the caller write every plane before the single
-/// close, so cfitsio writes the data unit exactly once. The returned [`FitsFile`]
-/// owns the raw pointer; dropping it closes the file exactly once.
-pub fn copy_header_only_open(input: &Path, output: &Path) -> Result<FitsFile> {
-    refuse_input_clobber(input, output)?;
-
-    let mut in_fptr = FitsFile::open(input.to_string_lossy().as_ref())?;
-    in_fptr.primary_hdu()?; // position at the primary HDU to copy
-
-    if output.exists() {
-        std::fs::remove_file(output)?;
-    }
-    let out_name = cstr(output.to_string_lossy().as_ref())?;
-
-    let mut status = 0;
-    let mut raw_out: *mut fitsio::sys::fitsfile = std::ptr::null_mut();
-    let handle = unsafe {
-        fitsio::sys::ffinit(&mut raw_out, out_name.as_ptr(), &mut status);
-        check_status(status)?;
-
-        fitsio::sys::ffcphd(in_fptr.as_raw(), raw_out, &mut status);
-        if let Err(e) = check_status(status) {
-            let mut close_status = 0;
-            fitsio::sys::ffclos(raw_out, &mut close_status);
-            return Err(e.into());
+/// Compares inodes on unix so case-insensitive filesystems and hard links count.
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
         }
-
-        FitsFile::from_raw(raw_out, fitsio::FileOpenMode::READWRITE)?
-    };
-    Ok(handle)
+    }
+    #[cfg(not(unix))]
+    {
+        match (a.canonicalize(), b.canonicalize()) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+    }
 }
 
-/// Create `output` containing only the primary-HDU header of `input` — no pixel
-/// data — closing the file immediately (which zero-fills the whole data unit).
+/// Remove `path` if it exists, including a dangling symlink.
+fn remove_existing(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// Blank cards reserved before END so callers can add keywords without
+/// cfitsio shifting the whole data unit.
+const RESERVED_CARDS: usize = 36;
+
+/// Write `input`'s primary header to a new `output` and size the file for the
+/// data unit without writing it, so the data reads as zeros and stays sparse.
 ///
-/// For the streaming write path prefer [`copy_header_only_open`] or
-/// [`create_cube_open`], which keep the handle open so the data unit is written
-/// a single time.
+/// CHECKSUM and DATASUM are dropped since the data no longer matches them.
 pub fn copy_header_only(input: &Path, output: &Path) -> Result<()> {
-    // Drop closes the handle, flushing the (zero-filled) data unit to disk.
-    copy_header_only_open(input, output).map(drop)
+    refuse_input_clobber(input, output)?;
+    let mut in_fptr = FitsFile::open(input.to_string_lossy().as_ref())?;
+    in_fptr.primary_hdu()?;
+    let (_, datastart, dataend) = hdu_offsets(&mut in_fptr)?;
+    let header = serialise_header(&mut in_fptr, &["CHECKSUM", "DATASUM"], RESERVED_CARDS)?;
+    drop(in_fptr);
+
+    remove_existing(output)?;
+    let mut file = std::fs::File::create_new(output)?;
+    file.write_all(&header)?;
+    file.set_len(header.len() as u64 + (dataend - datastart))?;
+    Ok(())
 }
+
+/// [`copy_header_only`], then open `output` for writing.
+pub fn copy_header_only_open(input: &Path, output: &Path) -> Result<FitsFile> {
+    copy_header_only(input, output)?;
+    Ok(FitsFile::edit(output.to_string_lossy().as_ref())?)
+}
+
+/// Header start, data start and data end (block padded) of the current HDU.
+pub(crate) fn hdu_offsets(fptr: &mut FitsFile) -> Result<(u64, u64, u64)> {
+    let (mut head, mut data, mut end): (LONGLONG, LONGLONG, LONGLONG) = (0, 0, 0);
+    let mut status = 0;
+    unsafe { fitsio::sys::ffghadll(fptr.as_raw(), &mut head, &mut data, &mut end, &mut status) };
+    check_status(status)?;
+    Ok((head as u64, data as u64, end as u64))
+}
+
+/// The current header as FITS bytes: every card except `exclude`, `reserve`
+/// blank cards, END, then space padding to a whole 2880-byte block.
+pub(crate) fn serialise_header(
+    fptr: &mut FitsFile,
+    exclude: &[&str],
+    reserve: usize,
+) -> Result<Vec<u8>> {
+    let excl: Vec<CString> = exclude.iter().map(|k| cstr(k)).collect::<Result<_>>()?;
+    let mut excl_ptrs: Vec<*mut c_char> = excl.iter().map(|c| c.as_ptr() as *mut c_char).collect();
+    let mut text: *mut c_char = std::ptr::null_mut();
+    let mut nkeys: c_int = 0;
+    let mut status = 0;
+    unsafe {
+        fitsio::sys::ffhdr2str(
+            fptr.as_raw(),
+            0,
+            excl_ptrs.as_mut_ptr(),
+            excl_ptrs.len() as c_int,
+            &mut text,
+            &mut nkeys,
+            &mut status,
+        );
+    }
+    check_status(status)?;
+    let mut header = unsafe {
+        let bytes = CStr::from_ptr(text).to_bytes().to_vec();
+        let mut free_status = 0;
+        fitsio::sys::fffree(text as *mut c_void, &mut free_status);
+        bytes
+    };
+    // ffhdr2str ends the string with the END card.
+    if !header.ends_with(END_CARD) {
+        return Err(AtfitsError::Other(
+            "serialised header has no END card".into(),
+        ));
+    }
+    header.truncate(header.len() - END_CARD.len());
+    header.resize(header.len() + reserve * 80, b' ');
+    header.extend_from_slice(END_CARD);
+    header.resize(header.len().div_ceil(2880) * 2880, b' ');
+    Ok(header)
+}
+
+const END_CARD: &[u8; 80] =
+    b"END                                                                             ";
 
 /// Create `output` as a fresh image of shape `dims` (FITS order, NAXIS1 first)
 /// and `bitpix`, copy every non-structural header card from `input`, and return
@@ -148,9 +248,7 @@ pub fn create_cube_open(
     use fitsio::images::ImageDescription;
 
     refuse_input_clobber(input, output)?;
-    if output.exists() {
-        std::fs::remove_file(output)?;
-    }
+    remove_existing(output)?;
 
     // `ImageDescription::dimensions` is C-order (row-major), the reverse of the
     // FITS NAXIS order.
@@ -165,34 +263,12 @@ pub fn create_cube_open(
         .open()?;
     out.primary_hdu()?;
 
-    // Copy every non-structural card from the template's primary header.
     let mut in_fptr = FitsFile::open(input.to_string_lossy().as_ref())?;
     in_fptr.primary_hdu()?;
+    copy_template_cards(&mut in_fptr, &mut out, bitpix)?;
+    // Re-read the header so cfitsio applies any copied BSCALE/BZERO/BLANK.
     let mut status = 0;
-    unsafe {
-        let mut nkeys: std::os::raw::c_int = 0;
-        let mut morekeys: std::os::raw::c_int = 0;
-        fitsio::sys::ffghsp(in_fptr.as_raw(), &mut nkeys, &mut morekeys, &mut status);
-        check_status(status)?;
-
-        // `c_char` is signed on x86_64/macOS but unsigned (u8) on aarch64-Linux;
-        // cfitsio's bindings type the card pointer as `*mut c_char`, so use that
-        // rather than a hard-coded `i8` (which fails to compile on aarch64).
-        let mut card = [0 as std::os::raw::c_char; 81];
-        for i in 1..=nkeys {
-            card.fill(0);
-            fitsio::sys::ffgrec(in_fptr.as_raw(), i, card.as_mut_ptr(), &mut status);
-            if check_status(status).is_err() {
-                break;
-            }
-            let card_str = std::ffi::CStr::from_ptr(card.as_ptr()).to_string_lossy();
-            let name = card_str.split([' ', '=']).next().unwrap_or("").trim();
-            if is_structural_keyword(name) {
-                continue;
-            }
-            fitsio::sys::ffprec(out.as_raw(), card.as_ptr(), &mut status);
-            check_status(status)?;
-        }
-    }
+    unsafe { fitsio::sys::ffrdef(out.as_raw(), &mut status) };
+    check_status(status)?;
     Ok(out)
 }

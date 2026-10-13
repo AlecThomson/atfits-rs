@@ -107,3 +107,118 @@ fn nan_writes_as_blank_in_integer_images() {
         .unwrap();
     assert!(f32::write_section(&mut f, 0, 2, &[f32::NAN, 1.0]).is_err());
 }
+
+#[test]
+fn template_copy_keeps_blank_only_for_integer_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmpl = int_cube(dir.path());
+    for bitpix in [16, -32] {
+        let disk = dir.path().join(format!("disk{bitpix}.fits"));
+        drop(create_cube_open(&tmpl, &disk, bitpix, &[3, 2, 2]).unwrap());
+        let mut mem = create_mem_cube(&tmpl, bitpix, &[3, 2, 2]).unwrap();
+        let layout = extract_header_layout(&mut mem, &[3, 2, 2]).unwrap();
+        let mem_text = String::from_utf8(layout.header).unwrap();
+
+        let integer = bitpix > 0;
+        assert_eq!(read_key_f64(&disk, "BLANK").unwrap().is_some(), integer);
+        assert_eq!(read_key_f64(&disk, "BZERO").unwrap().is_some(), integer);
+        assert_eq!(mem_text.contains("BLANK   ="), integer);
+        assert!(!has_key(&disk, "CHECKSUM").unwrap());
+        assert!(!has_key(&disk, "DATASUM").unwrap());
+        assert!(!mem_text.contains("CHECKSUM") && !mem_text.contains("DATASUM"));
+    }
+}
+
+#[test]
+fn copied_integer_cube_applies_scaling_on_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmpl = int_cube(dir.path());
+    let out = dir.path().join("out.fits");
+    {
+        let mut f = create_cube_open(&tmpl, &out, 16, &[3, 2, 2]).unwrap();
+        f32::write_section(&mut f, 0, 2, &[14.0, f32::NAN]).unwrap();
+    }
+    let data = f32::read_section(&mut open(&out), 0, 2).unwrap();
+    assert_eq!(data[0], 14.0);
+    assert!(data[1].is_nan());
+}
+
+#[test]
+fn copy_header_only_sizes_data_unit_without_checksums() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmpl = int_cube(dir.path());
+    let out = dir.path().join("hdr.fits");
+    copy_header_only(&tmpl, &out).unwrap();
+
+    let len = std::fs::metadata(&out).unwrap().len();
+    assert_eq!(len % 2880, 0);
+    assert!(!has_key(&out, "CHECKSUM").unwrap());
+    assert_eq!(read_key_f64(&out, "BLANK").unwrap(), Some(-32768.0));
+    assert_eq!(
+        read_key_string(&out, "CTYPE3").unwrap().as_deref(),
+        Some("FREQ")
+    );
+
+    let mut f = copy_header_only_open(&tmpl, &out).unwrap();
+    for i in 0..30 {
+        update_key_i64(&mut f, &format!("EXTRA{i}"), i).unwrap();
+    }
+    f32::write_section(&mut f, 0, 2, &[12.0, f32::NAN]).unwrap();
+    drop(f);
+    assert_eq!(std::fs::metadata(&out).unwrap().len(), len);
+    let data = f32::read_full(&mut open(&out)).unwrap();
+    assert_eq!(data.len(), 12);
+    assert_eq!(data[0], 12.0);
+    assert!(data[1].is_nan());
+    // Unwritten raw zeros decode through BZERO.
+    assert_eq!(data[2], 10.0);
+}
+
+#[test]
+fn refuses_to_overwrite_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmpl = float_image(dir.path(), "img.fits");
+    assert!(copy_header_only(&tmpl, &tmpl).is_err());
+
+    #[cfg(unix)]
+    {
+        let link = dir.path().join("link.fits");
+        std::os::unix::fs::symlink(&tmpl, &link).unwrap();
+        assert!(copy_header_only(&tmpl, &link).is_err());
+    }
+
+    // On a case-insensitive filesystem (macOS default) IMG.fits is img.fits.
+    let upper = dir.path().join("IMG.fits");
+    if upper.exists() {
+        assert!(copy_header_only(&tmpl, &upper).is_err());
+        assert!(create_cube_open(&tmpl, &upper, -32, &[2, 2]).is_err());
+    }
+    assert_eq!(
+        f32::read_full(&mut open(&tmpl)).unwrap(),
+        vec![1.0, 2.0, 3.0, 4.0]
+    );
+}
+
+#[test]
+fn mem_header_has_one_end_card_for_any_card_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let tmpl = float_image(dir.path(), "t.fits");
+    let mut f = edit(&tmpl);
+    for n in 0..40 {
+        update_key_i64(&mut f, &format!("K{n}"), n).unwrap();
+        f.primary_hdu().unwrap();
+        let mut status = 0;
+        unsafe { fitsio::sys::ffflus(f.as_raw(), &mut status) };
+        let mut mem = create_mem_cube(&tmpl, -32, &[2, 2]).unwrap();
+        let layout = extract_header_layout(&mut mem, &[2, 2]).unwrap();
+        let cards: Vec<&[u8]> = layout.header.chunks(80).collect();
+        let end = cards.iter().position(|c| c.starts_with(b"END ")).unwrap();
+        assert_eq!(layout.header.len() as u64, layout.datastart);
+        assert_eq!(layout.datastart % 2880, 0);
+        assert!(
+            cards[end + 1..]
+                .iter()
+                .all(|c| c.iter().all(|&b| b == b' '))
+        );
+    }
+}
