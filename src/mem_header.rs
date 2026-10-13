@@ -80,7 +80,7 @@ pub fn create_mem_cube(template: &Path, bitpix: i64, dims: &[usize]) -> Result<F
 fn set_naxis_card(header: &mut [u8], axis: usize, value: i64) -> Result<()> {
     let key = format!("NAXIS{axis}");
     let key_bytes = key.as_bytes();
-    for card in header.chunks_exact_mut(80) {
+    for card in header.as_chunks_mut::<80>().0 {
         // The keyword occupies bytes 0..8, blank-padded.
         let kw_end = card[..8].iter().position(|&b| b == b' ').unwrap_or(8);
         if kw_end == key_bytes.len() && &card[..kw_end] == key_bytes {
