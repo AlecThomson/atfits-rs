@@ -222,3 +222,29 @@ fn mem_header_has_one_end_card_for_any_card_count() {
         );
     }
 }
+
+#[test]
+fn update_key_f64_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = float_image(dir.path(), "k.fits");
+    let values = [1.234_567_890_123_456_7e9, 0.1 + 0.2, 0.1, -1.0e-300, 5.0];
+    {
+        let mut f = edit(&path);
+        for (i, v) in values.iter().enumerate() {
+            update_key_f64(&mut f, &format!("V{i}"), *v).unwrap();
+        }
+    }
+    for (i, v) in values.iter().enumerate() {
+        assert_eq!(read_key_f64(&path, &format!("V{i}")).unwrap(), Some(*v));
+    }
+}
+
+#[test]
+fn read_key_distinguishes_missing_from_malformed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = float_image(dir.path(), "k.fits");
+    update_key_str(&mut edit(&path), "WORD", "abc").unwrap();
+    assert_eq!(read_key_f64(&path, "NOPE").unwrap(), None);
+    assert_eq!(read_key_string(&path, "NOPE").unwrap(), None);
+    assert!(read_key_f64(&path, "WORD").is_err());
+}
