@@ -2,6 +2,7 @@
 //! `convolve-rs`).
 //!
 //! - [`PixelType`], [`CubeElem`]: `f32`/`f64` pixel range I/O with BLANK as NaN.
+//! - [`raw`]: pixel I/O in any FITS type, rectangular subsets, scaling off.
 //! - [`keys`]: keyword updates that replace cards instead of duplicating them.
 //! - [`header`]: image geometry and WCS axis lookup.
 //! - [`image`]: image creation, resizing and header copying.
@@ -23,6 +24,7 @@ pub mod keys;
 pub mod mem_header;
 pub mod path;
 pub mod pixel;
+pub mod raw;
 
 pub use error::{AtfitsError, Result, is_reentrant, status_message};
 pub use header::{
@@ -38,4 +40,8 @@ pub use keys::{
 };
 pub use mem_header::{CubeLayout, create_mem_cube, extract_header_layout};
 pub use path::output_path;
-pub use pixel::{CubeElem, PixelType, read_plane, write_plane};
+pub use pixel::{CubeElem, PixelType, read_plane, read_plane_into, write_plane};
+pub use raw::{
+    Pixel, as_bytes, disable_scaling, image_shape, read_pixels, read_pixels_into, swap_to_be,
+    write_pixels,
+};

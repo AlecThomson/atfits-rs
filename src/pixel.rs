@@ -7,6 +7,7 @@ use fitsio::images::ImageType;
 use fitsio::sys::{self, LONGLONG};
 
 use crate::error::{AtfitsError, Result, ffcall};
+use crate::raw::read_flat;
 
 /// Precision a cube is processed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,12 @@ pub trait CubeElem: Copy + Send + Sync + 'static {
     fn read_full(fptr: &mut FitsFile) -> Result<Vec<Self>>;
     /// Read pixels `start..end`.
     fn read_section(fptr: &mut FitsFile, start: usize, end: usize) -> Result<Vec<Self>>;
+    /// Read pixels `start..start + out.len()` into `out`.
+    fn read_section_into(fptr: &mut FitsFile, start: usize, out: &mut [Self]) -> Result<()> {
+        let data = Self::read_section(fptr, start, start + out.len())?;
+        out.copy_from_slice(&data);
+        Ok(())
+    }
     /// Write `data` to pixels `start..end`; `data.len()` must equal `end - start`.
     fn write_section(fptr: &mut FitsFile, start: usize, end: usize, data: &[Self]) -> Result<()>;
 }
@@ -50,6 +57,17 @@ pub fn read_plane<T: CubeElem>(
 ) -> Result<Vec<T>> {
     let (start, end) = plane_range(plane_len, index)?;
     T::read_section(fptr, start, end)
+}
+
+/// Read plane `index` of the primary image into `out`, whose length is the
+/// plane size.
+pub fn read_plane_into<T: CubeElem>(
+    fptr: &mut FitsFile,
+    index: usize,
+    out: &mut [T],
+) -> Result<()> {
+    let (start, _) = plane_range(out.len(), index)?;
+    T::read_section_into(fptr, start, out)
 }
 
 /// Write `data` as plane `index` of the primary image.
@@ -83,11 +101,18 @@ fn primary_image(fptr: &mut FitsFile) -> Result<(usize, bool)> {
 
 fn check_range(start: usize, end: usize, npix: usize) -> Result<()> {
     if start > end || end > npix {
-        return Err(AtfitsError::Other(format!(
-            "pixel range {start}..{end} is outside the image ({npix} pixels)"
-        )));
+        return Err(range_error(start, end, Some(npix)));
     }
     Ok(())
+}
+
+fn range_error(start: usize, end: usize, npix: Option<usize>) -> AtfitsError {
+    match npix {
+        Some(n) => AtfitsError::Other(format!(
+            "pixel range {start}..{end} is outside the image ({n} pixels)"
+        )),
+        None => AtfitsError::Other(format!("pixel range {start}..{end} is reversed")),
+    }
 }
 
 macro_rules! impl_cube_elem {
@@ -101,24 +126,26 @@ macro_rules! impl_cube_elem {
             }
 
             fn read_section(fptr: &mut FitsFile, start: usize, end: usize) -> Result<Vec<Self>> {
-                let (npix, _) = primary_image(fptr)?;
-                check_range(start, end, npix)?;
+                if start > end {
+                    return Err(range_error(start, end, None));
+                }
                 let mut out: Vec<$t> = vec![0.0; end - start];
-                let mut nulval = <$t>::NAN;
-                let mut anynul: c_int = 0;
-                ffcall(|s| unsafe {
-                    sys::ffgpv(
-                        fptr.as_raw(),
-                        $code as c_int,
-                        start as LONGLONG + 1,
-                        out.len() as LONGLONG,
-                        &mut nulval as *mut $t as *mut c_void,
-                        out.as_mut_ptr() as *mut c_void,
-                        &mut anynul,
-                        s,
-                    )
-                })?;
+                Self::read_section_into(fptr, start, &mut out)?;
                 Ok(out)
+            }
+
+            fn read_section_into(
+                fptr: &mut FitsFile,
+                start: usize,
+                out: &mut [Self],
+            ) -> Result<()> {
+                let (npix, integer) = primary_image(fptr)?;
+                let end = start
+                    .checked_add(out.len())
+                    .ok_or_else(|| range_error(start, usize::MAX, Some(npix)))?;
+                check_range(start, end, npix)?;
+                // Float NaN reads as NaN anyway; a null value only costs time there.
+                read_flat(fptr, start, integer.then_some(<$t>::NAN), out)
             }
 
             fn write_section(
