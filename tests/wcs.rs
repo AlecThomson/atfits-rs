@@ -79,3 +79,20 @@ fn pixel_scale_from_cdelt_pc_or_cd() {
     let (dx, dy) = pixel_scale_deg(&mut f).unwrap();
     assert!((dx - a).abs() < 1e-15 && (dy - a).abs() < 1e-15);
 }
+
+#[test]
+fn key_bool_reads_logicals_and_strings() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = image(dir.path());
+    update_key_logical(&mut f, "L", true).unwrap();
+    update_key_logical(&mut f, "LF", false).unwrap();
+    update_key_str(&mut f, "S", "TRUE").unwrap();
+    update_key_str(&mut f, "SF", "f").unwrap();
+    update_key_i64(&mut f, "N", 3).unwrap();
+    assert_eq!(key_bool(&mut f, "L").unwrap(), Some(true));
+    assert_eq!(key_bool(&mut f, "LF").unwrap(), Some(false));
+    assert_eq!(key_bool(&mut f, "S").unwrap(), Some(true));
+    assert_eq!(key_bool(&mut f, "SF").unwrap(), Some(false));
+    assert_eq!(key_bool(&mut f, "NOPE").unwrap(), None);
+    assert!(key_bool(&mut f, "N").is_err());
+}

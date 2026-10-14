@@ -36,8 +36,9 @@ pub use image::{
     is_scaling_keyword, is_structural_keyword, resize_image,
 };
 pub use keys::{
-    delete_key, has_key, key_exists, key_f64, key_i64, key_string, read_key_f64, read_key_string,
-    update_key_f64, update_key_i64, update_key_logical, update_key_str, write_comment,
+    delete_key, has_key, key_bool, key_exists, key_f64, key_i64, key_string, read_key_f64,
+    read_key_string, update_key_f64, update_key_i64, update_key_logical, update_key_str,
+    write_comment,
 };
 pub use mem_header::{CubeLayout, create_mem_cube, extract_header_layout};
 pub use path::output_path;
