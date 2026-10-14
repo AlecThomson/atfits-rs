@@ -4,7 +4,7 @@ use std::path::Path;
 use fitsio::FitsFile;
 
 use crate::error::{AtfitsError, Result};
-use crate::keys::{key_f64, key_i64, key_string};
+use crate::keys::{key_exists, key_f64, key_i64, key_string};
 use crate::path::utf8;
 
 /// Shape and BITPIX of an image, with `dims[i]` = NAXIS(i+1).
@@ -64,7 +64,7 @@ pub struct TargetAxis {
     pub crpix: f64,
     /// CRVALi, default 0.
     pub crval: f64,
-    /// CDi_i if present, else CDELTi, else 1. PCi_j is not applied.
+    /// Pixel step: CDi_i if present, else CDELTi * PCi_i (defaults 1).
     pub cdelt: f64,
     pub cunit: Option<String>,
 }
@@ -73,6 +73,19 @@ impl TargetAxis {
     /// World coordinate of 1-based pixel `pix` along this axis, in CUNIT.
     pub fn world(&self, pix: f64) -> f64 {
         self.crval + (pix - self.crpix) * self.cdelt
+    }
+
+    /// Factor converting CUNIT to Hz for a FREQ axis or to seconds for a TIME
+    /// axis. `None` for an unknown unit or another axis type.
+    pub fn unit_scale(&self) -> Option<f64> {
+        let unit = self.cunit.as_deref();
+        if self.ctype.contains("FREQ") {
+            frequency_unit_scale(unit)
+        } else if self.ctype.contains("TIME") {
+            time_unit_scale(unit)
+        } else {
+            None
+        }
     }
 }
 
@@ -98,7 +111,10 @@ pub fn find_target_axis_in(fptr: &mut FitsFile, name: &str) -> Result<TargetAxis
         }
         let cdelt = match key_f64(fptr, &format!("CD{axis}_{axis}"))? {
             Some(cd) => cd,
-            None => key_f64(fptr, &format!("CDELT{axis}"))?.unwrap_or(1.0),
+            None => {
+                key_f64(fptr, &format!("CDELT{axis}"))?.unwrap_or(1.0)
+                    * key_f64(fptr, &format!("PC{axis}_{axis}"))?.unwrap_or(1.0)
+            }
         };
         return Ok(TargetAxis {
             fits_idx: axis,
@@ -119,23 +135,95 @@ pub fn find_target_axis_in(fptr: &mut FitsFile, name: &str) -> Result<TargetAxis
 /// Factor converting a frequency or time unit to Hz or seconds.
 ///
 /// `None` (no CUNIT) means the SI default and gives 1. Case is ignored, so
-/// "MHZ" is megahertz. Returns `None` for units it does not know.
+/// "MHZ" is megahertz. Returns `None` for units it does not know. Prefer
+/// [`frequency_unit_scale`], [`time_unit_scale`] or [`TargetAxis::unit_scale`],
+/// which reject units of the wrong kind.
 pub fn spectral_unit_scale(unit: Option<&str>) -> Option<f64> {
-    let Some(unit) = unit else {
+    frequency_unit_scale(unit).or_else(|| time_unit_scale(unit))
+}
+
+/// Factor converting a frequency unit to Hz; no unit gives 1. Case is
+/// ignored, so "MHZ" is megahertz. `None` for anything else.
+pub fn frequency_unit_scale(unit: Option<&str>) -> Option<f64> {
+    unit_scale(
+        unit,
+        &[
+            ("hz", 1.0),
+            ("khz", 1e3),
+            ("mhz", 1e6),
+            ("ghz", 1e9),
+            ("thz", 1e12),
+        ],
+    )
+}
+
+/// Factor converting a time unit to seconds; no unit gives 1. `None` for
+/// anything else.
+pub fn time_unit_scale(unit: Option<&str>) -> Option<f64> {
+    unit_scale(
+        unit,
+        &[
+            ("s", 1.0),
+            ("ms", 1e-3),
+            ("us", 1e-6),
+            ("min", 60.0),
+            ("h", 3600.0),
+            ("d", 86400.0),
+        ],
+    )
+}
+
+fn unit_scale(unit: Option<&str>, table: &[(&str, f64)]) -> Option<f64> {
+    let unit = unit.unwrap_or("").trim().to_ascii_lowercase();
+    if unit.is_empty() {
         return Some(1.0);
-    };
-    let scale = match unit.trim().to_ascii_lowercase().as_str() {
-        "" | "hz" | "s" => 1.0,
-        "khz" => 1e3,
-        "mhz" => 1e6,
-        "ghz" => 1e9,
-        "thz" => 1e12,
-        "ms" => 1e-3,
-        "us" => 1e-6,
-        "min" => 60.0,
-        "h" => 3600.0,
-        "d" => 86400.0,
-        _ => return None,
-    };
-    Some(scale)
+    }
+    table.iter().find(|(u, _)| *u == unit).map(|&(_, f)| f)
+}
+
+/// `(|dx|, |dy|)`: the size in degrees of one pixel step along NAXIS1 and
+/// NAXIS2 of the current HDU.
+///
+/// Uses the CD matrix when present, else CDELTi with PCi_j. CUNIT1/2 may be
+/// deg (the default), arcmin, arcsec or rad.
+pub fn pixel_scale_deg(fptr: &mut FitsFile) -> Result<(f64, f64)> {
+    let mut has_cd = false;
+    for key in ["CD1_1", "CD1_2", "CD2_1", "CD2_2"] {
+        has_cd |= key_exists(fptr, key)?;
+    }
+    // m[i][j]: degrees along world axis i per pixel step along axis j.
+    let mut m = [[0.0; 2]; 2];
+    for i in 1..=2 {
+        let row_scale = if has_cd {
+            1.0
+        } else {
+            key_f64(fptr, &format!("CDELT{i}"))?
+                .ok_or_else(|| AtfitsError::MissingKeyword(format!("CDELT{i} or CD{i}_{i}")))?
+        };
+        let unit = key_string(fptr, &format!("CUNIT{i}"))?;
+        let deg = angle_unit_deg(unit.as_deref())
+            .ok_or_else(|| AtfitsError::Other(format!("unknown angle unit CUNIT{i}={unit:?}")))?;
+        for j in 1..=2 {
+            let v = if has_cd {
+                key_f64(fptr, &format!("CD{i}_{j}"))?.unwrap_or(0.0)
+            } else {
+                let diag = if i == j { 1.0 } else { 0.0 };
+                key_f64(fptr, &format!("PC{i}_{j}"))?.unwrap_or(diag)
+            };
+            m[i - 1][j - 1] = v * row_scale * deg;
+        }
+    }
+    Ok((m[0][0].hypot(m[1][0]), m[0][1].hypot(m[1][1])))
+}
+
+fn angle_unit_deg(unit: Option<&str>) -> Option<f64> {
+    unit_scale(
+        unit,
+        &[
+            ("deg", 1.0),
+            ("arcmin", 1.0 / 60.0),
+            ("arcsec", 1.0 / 3600.0),
+            ("rad", 180.0 / std::f64::consts::PI),
+        ],
+    )
 }
