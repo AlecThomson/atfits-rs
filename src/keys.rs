@@ -2,8 +2,8 @@
 //!
 //! `fitsio`'s `write_key` calls `ffpky*`, which appends a duplicate card when the
 //! keyword exists. The `update_key_*` functions use `ffuky*`, which replaces it.
-use std::ffi::CString;
-use std::os::raw::c_int;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
 use std::path::Path;
 use std::ptr;
 
@@ -120,6 +120,38 @@ pub fn key_i64(fptr: &mut FitsFile, name: &str) -> Result<Option<i64>> {
 /// A value that is not a number is an error.
 pub fn key_f64(fptr: &mut FitsFile, name: &str) -> Result<Option<f64>> {
     optional(f64::read_key(fptr, name))
+}
+
+/// Read a keyword of the current HDU as a flag, or `None` if it is absent.
+///
+/// Accepts a logical (`T`/`F`) and, as some writers use them, the strings
+/// "T", "F", "TRUE" and "FALSE" in any case. Other values are an error.
+pub fn key_bool(fptr: &mut FitsFile, name: &str) -> Result<Option<bool>> {
+    let c_name = cstr(name)?;
+    let mut value = [0 as c_char; 71];
+    let read = ffcall(|s| unsafe {
+        sys::ffgkey(
+            fptr.as_raw(),
+            c_name.as_ptr(),
+            value.as_mut_ptr(),
+            ptr::null_mut(),
+            s,
+        )
+    });
+    match read {
+        Err(e) if is_missing_key(&e) => return Ok(None),
+        r => r?,
+    }
+    let raw = unsafe { CStr::from_ptr(value.as_ptr()) }.to_string_lossy();
+    let text = raw.trim().trim_matches('\'').trim().to_ascii_uppercase();
+    match text.as_str() {
+        "T" | "TRUE" => Ok(Some(true)),
+        "F" | "FALSE" => Ok(Some(false)),
+        _ => Err(AtfitsError::Other(format!(
+            "{name} = {} is not a logical",
+            raw.trim()
+        ))),
+    }
 }
 
 /// Read a keyword of the current HDU as a string, or `None` if it is absent.

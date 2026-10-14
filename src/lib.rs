@@ -2,6 +2,7 @@
 //! `convolve-rs`).
 //!
 //! - [`PixelType`], [`CubeElem`]: `f32`/`f64` pixel range I/O with BLANK as NaN.
+//! - [`raw`]: pixel I/O in any FITS type, rectangular subsets, scaling off.
 //! - [`keys`]: keyword updates that replace cards instead of duplicating them.
 //! - [`header`]: image geometry and WCS axis lookup.
 //! - [`image`]: image creation, resizing and header copying.
@@ -23,19 +24,26 @@ pub mod keys;
 pub mod mem_header;
 pub mod path;
 pub mod pixel;
+pub mod raw;
 
 pub use error::{AtfitsError, Result, is_reentrant, status_message};
 pub use header::{
-    HeaderGeom, TargetAxis, find_target_axis, find_target_axis_in, spectral_unit_scale,
+    HeaderGeom, TargetAxis, find_target_axis, find_target_axis_in, frequency_unit_scale,
+    pixel_scale_deg, spectral_unit_scale, time_unit_scale,
 };
 pub use image::{
-    bitpix_to_image_type, copy_header_only, copy_header_only_open, create_cube_open,
-    is_scaling_keyword, is_structural_keyword, resize_image,
+    bitpix_to_image_type, copy_hdu_header, copy_header_only, copy_header_only_open,
+    create_cube_open, is_scaling_keyword, is_structural_keyword, resize_image,
 };
 pub use keys::{
-    delete_key, has_key, key_exists, key_f64, key_i64, key_string, read_key_f64, read_key_string,
-    update_key_f64, update_key_i64, update_key_logical, update_key_str, write_comment,
+    delete_key, has_key, key_bool, key_exists, key_f64, key_i64, key_string, read_key_f64,
+    read_key_string, update_key_f64, update_key_i64, update_key_logical, update_key_str,
+    write_comment,
 };
 pub use mem_header::{CubeLayout, create_mem_cube, extract_header_layout};
 pub use path::output_path;
-pub use pixel::{CubeElem, PixelType, read_plane, write_plane};
+pub use pixel::{CubeElem, PixelType, read_plane, read_plane_into, write_plane};
+pub use raw::{
+    Pixel, as_bytes, disable_scaling, image_shape, read_pixels, read_pixels_into, swap_to_be,
+    write_pixels,
+};

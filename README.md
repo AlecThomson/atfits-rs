@@ -10,11 +10,14 @@
 
 - `PixelType`, `CubeElem`, `read_plane`, `write_plane`: `f32`/`f64` pixel I/O,
   with BLANK read as NaN and NaN written as BLANK.
+- `raw`: pixel I/O in any FITS type, rectangular subsets, stored values
+  with scaling off, and big-endian helpers for raw data-unit writes.
 - `keys`: keyword updates that replace the existing card (`fitsio`'s
   `write_key` appends a duplicate), and readers that tell a missing keyword
   from a malformed one.
-- `header`: image geometry and WCS axis lookup.
-- `image`: image creation, resizing and header-only copies.
+- `header`: image geometry, WCS axis lookup, unit factors and pixel scale.
+- `image`: image creation, resizing and header-only copies, including from
+  an image extension.
 - `mem_header`: build a cube header in memory and write the data unit with
   plain file I/O.
 - `output_path`: output file names.
