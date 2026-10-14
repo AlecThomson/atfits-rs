@@ -101,3 +101,54 @@ fn big_endian_bytes() {
     assert_eq!(as_bytes(&floats), &[0x3f, 0x80, 0, 0]);
     assert_eq!(<i64 as Pixel>::BITPIX, 64);
 }
+
+#[test]
+fn copy_extension_header_to_primary() {
+    use fitsio::tables::{ColumnDataType, ColumnDescription};
+    let dir = tempfile::tempdir().unwrap();
+    let src_path = dir.path().join("mef.fits");
+    let mut src = FitsFile::create(&src_path).open().unwrap();
+    let desc = ImageDescription {
+        data_type: ImageType::Short,
+        dimensions: &[3, 4],
+    };
+    src.create_image("SCI", &desc).unwrap();
+    update_key_str(&mut src, "CTYPE1", "RA---SIN").unwrap();
+    write_pixels(&mut src, 0, &[7i16; 12]).unwrap();
+    unsafe {
+        let mut status = 0;
+        fitsio::sys::ffpcks(src.as_raw(), &mut status);
+    }
+    let col = ColumnDescription::new("X")
+        .with_type(ColumnDataType::Int)
+        .create()
+        .unwrap();
+    src.create_table("TAB", &[col]).unwrap();
+
+    let out_path = dir.path().join("out.fits");
+    src.hdu(1).unwrap();
+    let mut out = copy_hdu_header(&mut src, &out_path).unwrap();
+    assert_eq!(image_shape(&mut out).unwrap(), vec![4, 3]);
+    write_pixels(&mut out, 4, &[5i16; 4]).unwrap();
+    drop(out);
+
+    let bytes = std::fs::read(&out_path).unwrap();
+    assert!(bytes.starts_with(b"SIMPLE  =                    T"));
+    let text = String::from_utf8_lossy(&bytes);
+    for key in ["XTENSION", "PCOUNT", "GCOUNT", "CHECKSUM", "DATASUM"] {
+        assert!(!text.contains(key), "{key} copied");
+    }
+    let mut f = FitsFile::open(&out_path).unwrap();
+    assert_eq!(
+        read_key_string(&out_path, "CTYPE1").unwrap().unwrap(),
+        "RA---SIN"
+    );
+    let mut px = Vec::new();
+    read_pixels::<i16>(&mut f, None, None, &mut px).unwrap();
+    assert_eq!(px, [0, 0, 0, 0, 5, 5, 5, 5, 0, 0, 0, 0]);
+
+    src.hdu(2).unwrap();
+    assert!(copy_hdu_header(&mut src, &dir.path().join("t.fits")).is_err());
+    src.hdu(1).unwrap();
+    assert!(copy_hdu_header(&mut src, &src_path).is_err());
+}

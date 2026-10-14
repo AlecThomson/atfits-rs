@@ -16,6 +16,9 @@ use crate::path::utf8;
 /// updates do not make cfitsio shift the whole data unit.
 const RESERVED_CARDS: usize = 36;
 
+const SIMPLE_CARD: &[u8; 80] =
+    b"SIMPLE  =                    T / file does conform to FITS standard             ";
+
 const END_CARD: &[u8; 80] =
     b"END                                                                             ";
 
@@ -69,24 +72,51 @@ pub fn bitpix_to_image_type(bitpix: i64) -> ImageType {
 /// CHECKSUM and DATASUM are dropped. An existing `output` is replaced, unless
 /// it is `input`.
 pub fn copy_header_only(input: &Path, output: &Path) -> Result<()> {
-    refuse_input_clobber(input, output)?;
     let mut src = FitsFile::open(utf8(input)?)?;
     src.primary_hdu()?;
-    let data_len = data_unit_len(&mut src)?;
-    let header = serialise_header(&mut src, &["CHECKSUM", "DATASUM"], RESERVED_CARDS)?;
-    drop(src);
-
-    remove_existing(output)?;
-    let mut file = std::fs::File::create_new(output)?;
-    file.write_all(&header)?;
-    file.set_len(header.len() as u64 + data_len)?;
-    Ok(())
+    write_header_file(&mut src, output)
 }
 
 /// [`copy_header_only`], then open `output` for editing.
 pub fn copy_header_only_open(input: &Path, output: &Path) -> Result<FitsFile> {
     copy_header_only(input, output)?;
     Ok(FitsFile::edit(utf8(output)?)?)
+}
+
+/// [`copy_header_only`] for the current HDU of `src`, which may be an image
+/// extension; it becomes the primary header of `output`. Returns `output`
+/// open for editing.
+pub fn copy_hdu_header(src: &mut FitsFile, output: &Path) -> Result<FitsFile> {
+    write_header_file(src, output)?;
+    Ok(FitsFile::edit(utf8(output)?)?)
+}
+
+fn write_header_file(src: &mut FitsFile, output: &Path) -> Result<()> {
+    refuse_input_clobber(src.file_path(), output)?;
+    let mut hdutype: c_int = 0;
+    ffcall(|s| unsafe { sys::ffghdt(src.as_raw(), &mut hdutype, s) })?;
+    if hdutype != sys::IMAGE_HDU as c_int {
+        return Err(AtfitsError::Other("current HDU is not an image".into()));
+    }
+    let data_len = data_unit_len(src)?;
+    let mut cards = header_cards(src, &["CHECKSUM", "DATASUM"])?;
+    if cards.starts_with(b"XTENSION") {
+        cards.splice(..80, *SIMPLE_CARD);
+        let mut kept = Vec::with_capacity(cards.len());
+        for card in cards.chunks(80) {
+            if !matches!(card_name(card), "PCOUNT" | "GCOUNT") {
+                kept.extend_from_slice(card);
+            }
+        }
+        cards = kept;
+    }
+    let header = finish_header(cards, RESERVED_CARDS);
+
+    remove_existing(output)?;
+    let mut file = std::fs::File::create_new(output)?;
+    file.write_all(&header)?;
+    file.set_len(header.len() as u64 + data_len)?;
+    Ok(())
 }
 
 /// Create `output` as an image of shape `dims` (`dims[0]` = NAXIS1) and
@@ -173,6 +203,11 @@ pub(crate) fn serialise_header(
     exclude: &[&str],
     reserve: usize,
 ) -> Result<Vec<u8>> {
+    Ok(finish_header(header_cards(fptr, exclude)?, reserve))
+}
+
+/// The cards of the current header except `exclude`, without END.
+fn header_cards(fptr: &mut FitsFile, exclude: &[&str]) -> Result<Vec<u8>> {
     let excl: Vec<CString> = exclude.iter().map(|k| cstr(k)).collect::<Result<_>>()?;
     let mut excl_ptrs: Vec<*mut c_char> = excl.iter().map(|c| c.as_ptr() as *mut c_char).collect();
     let mut text: *mut c_char = std::ptr::null_mut();
@@ -191,17 +226,22 @@ pub(crate) fn serialise_header(
     let mut header = unsafe { CStr::from_ptr(text) }.to_bytes().to_vec();
     ffcall(|s| unsafe { sys::fffree(text as *mut c_void, s) })?;
 
-    // ffhdr2str ends with the END card; reserved space goes before it.
+    // ffhdr2str ends with the END card.
     if !header.ends_with(END_CARD) {
         return Err(AtfitsError::Other(
             "serialised header has no END card".into(),
         ));
     }
     header.truncate(header.len() - END_CARD.len());
-    header.resize(header.len() + reserve * 80, b' ');
-    header.extend_from_slice(END_CARD);
-    header.resize(header.len().div_ceil(2880) * 2880, b' ');
     Ok(header)
+}
+
+/// Append `reserve` blank cards and END to `cards`, padded to a whole block.
+fn finish_header(mut cards: Vec<u8>, reserve: usize) -> Vec<u8> {
+    cards.resize(cards.len() + reserve * 80, b' ');
+    cards.extend_from_slice(END_CARD);
+    cards.resize(cards.len().div_ceil(2880) * 2880, b' ');
+    cards
 }
 
 /// Error if `output` is the same file as `input`, which the caller would delete.

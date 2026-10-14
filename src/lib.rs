@@ -32,8 +32,8 @@ pub use header::{
     pixel_scale_deg, spectral_unit_scale, time_unit_scale,
 };
 pub use image::{
-    bitpix_to_image_type, copy_header_only, copy_header_only_open, create_cube_open,
-    is_scaling_keyword, is_structural_keyword, resize_image,
+    bitpix_to_image_type, copy_hdu_header, copy_header_only, copy_header_only_open,
+    create_cube_open, is_scaling_keyword, is_structural_keyword, resize_image,
 };
 pub use keys::{
     delete_key, has_key, key_bool, key_exists, key_f64, key_i64, key_string, read_key_f64,
