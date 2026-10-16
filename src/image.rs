@@ -12,13 +12,6 @@ use crate::error::{AtfitsError, Result, ffcall};
 use crate::keys::cstr;
 use crate::path::utf8;
 
-/// Blank cards reserved before END by [`copy_header_only`], so later keyword
-/// updates do not make cfitsio shift the whole data unit.
-const RESERVED_CARDS: usize = 36;
-
-const SIMPLE_CARD: &[u8; 80] =
-    b"SIMPLE  =                    T / file does conform to FITS standard             ";
-
 const END_CARD: &[u8; 80] =
     b"END                                                                             ";
 
@@ -101,7 +94,10 @@ fn write_header_file(src: &mut FitsFile, output: &Path) -> Result<()> {
     let data_len = data_unit_len(src)?;
     let mut cards = header_cards(src, &["CHECKSUM", "DATASUM"])?;
     if cards.starts_with(b"XTENSION") {
-        cards.splice(..80, *SIMPLE_CARD);
+        cards.splice(
+            ..80,
+            *b"SIMPLE  =                    T / file does conform to FITS standard             ",
+        );
         let mut kept = Vec::with_capacity(cards.len());
         for card in cards.chunks(80) {
             if !matches!(card_name(card), "PCOUNT" | "GCOUNT") {
@@ -110,7 +106,8 @@ fn write_header_file(src: &mut FitsFile, output: &Path) -> Result<()> {
         }
         cards = kept;
     }
-    let header = finish_header(cards, RESERVED_CARDS);
+    // Room for 36 more cards, so later keyword updates don't shift the data unit.
+    let header = finish_header(cards, 36);
 
     remove_existing(output)?;
     let mut file = std::fs::File::create_new(output)?;
