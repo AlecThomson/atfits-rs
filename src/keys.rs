@@ -14,14 +14,12 @@ use fitsio::sys;
 use crate::error::{AtfitsError, Result, ffcall};
 use crate::path::utf8;
 
-const KEY_NO_EXIST: i32 = sys::KEY_NO_EXIST as i32;
-
 pub(crate) fn cstr(s: &str) -> Result<CString> {
     CString::new(s).map_err(|e| AtfitsError::Other(format!("invalid C string {s:?}: {e}")))
 }
 
 fn is_missing_key(e: &AtfitsError) -> bool {
-    matches!(e, AtfitsError::Fits(fitsio::errors::Error::Fits(f)) if f.status == KEY_NO_EXIST)
+    matches!(e, AtfitsError::Fits(fitsio::errors::Error::Fits(f)) if f.status == sys::KEY_NO_EXIST as i32)
 }
 
 /// `Ok(None)` for a missing keyword, otherwise the read result.
