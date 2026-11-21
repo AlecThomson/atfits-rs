@@ -5,6 +5,7 @@
 //! - [`raw`]: pixel I/O in any FITS type, rectangular subsets, scaling off.
 //! - [`keys`]: keyword updates that replace cards instead of duplicating them.
 //! - [`header`]: image geometry and WCS axis lookup.
+//! - [`hdu`]: HDU byte offsets, HDU count, image BITPIX, compression check.
 //! - [`image`]: image creation, resizing and header copying.
 //! - [`mem_header`]: build a cube header in memory and write the data unit
 //!   yourself.
@@ -18,6 +19,7 @@
 //! [`is_reentrant`] checks a system library. Write a given file from one handle
 //! only.
 pub mod error;
+pub mod hdu;
 pub mod header;
 pub mod image;
 pub mod keys;
@@ -27,18 +29,19 @@ pub mod pixel;
 pub mod raw;
 
 pub use error::{AtfitsError, Result, is_reentrant, status_message};
+pub use hdu::{HduOffsets, hdu_count, hdu_offsets, image_bitpix, is_compressed_image};
 pub use header::{
     HeaderGeom, TargetAxis, find_target_axis, find_target_axis_in, frequency_unit_scale,
     pixel_scale_deg, spectral_unit_scale, time_unit_scale,
 };
 pub use image::{
-    bitpix_to_image_type, copy_hdu_header, copy_header_only, copy_header_only_open,
-    create_cube_open, is_scaling_keyword, is_structural_keyword, resize_image,
+    bitpix_to_image_type, card_name, copy_hdu_header, copy_header_only, copy_header_only_open,
+    create_cube_open, header_cards, is_scaling_keyword, is_structural_keyword, resize_image,
 };
 pub use keys::{
     delete_key, has_key, key_bool, key_exists, key_f64, key_i64, key_string, read_key_f64,
     read_key_string, update_key_f64, update_key_i64, update_key_logical, update_key_str,
-    write_comment,
+    write_comment, write_history,
 };
 pub use mem_header::{CubeLayout, create_mem_cube, extract_header_layout};
 pub use path::output_path;

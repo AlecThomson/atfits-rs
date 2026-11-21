@@ -14,10 +14,12 @@
   with scaling off, and big-endian helpers for raw data-unit writes.
 - `keys`: keyword updates that replace the existing card (`fitsio`'s
   `write_key` appends a duplicate), and readers that tell a missing keyword
-  from a malformed one.
+  from a malformed one, plus HISTORY and COMMENT cards.
 - `header`: image geometry, WCS axis lookup, unit factors and pixel scale.
+- `hdu`: byte offsets of an HDU's header and data unit (for plain file I/O
+  on the data), HDU count, image BITPIX and a tile-compression check.
 - `image`: image creation, resizing and header-only copies, including from
-  an image extension.
+  an image extension; a header's raw cards and their keyword names.
 - `mem_header`: build a cube header in memory and write the data unit with
   plain file I/O.
 - `output_path`: output file names.

@@ -26,7 +26,7 @@ fitsio-src = ["fitsio/fitsio-src"]
 
 [dependencies]
 fitsio = { version = "0.21" }
-thiserror = "1"
+thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
