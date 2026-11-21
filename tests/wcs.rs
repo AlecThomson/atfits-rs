@@ -96,3 +96,43 @@ fn key_bool_reads_logicals_and_strings() {
     assert_eq!(key_bool(&mut f, "NOPE").unwrap(), None);
     assert!(key_bool(&mut f, "N").is_err());
 }
+
+#[test]
+fn pixel_scale_matrix_keeps_signs_and_rotation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = image(dir.path());
+    let close = |m: [[f64; 2]; 2], want: [[f64; 2]; 2]| {
+        for i in 0..2 {
+            for j in 0..2 {
+                assert!((m[i][j] - want[i][j]).abs() < 1e-15, "{m:?} != {want:?}");
+            }
+        }
+    };
+    let (dx, dy) = (-2.0 / 3600.0, 3.0 / 3600.0);
+    update_key_f64(&mut f, "CDELT1", dx).unwrap();
+    update_key_f64(&mut f, "CDELT2", dy).unwrap();
+    close(pixel_scale_matrix(&mut f).unwrap(), [[dx, 0.0], [0.0, dy]]);
+
+    // PC rows are scaled by their axis' CDELT
+    let t = 0.3f64;
+    update_key_f64(&mut f, "PC1_1", t.cos()).unwrap();
+    update_key_f64(&mut f, "PC1_2", -t.sin()).unwrap();
+    update_key_f64(&mut f, "PC2_1", t.sin()).unwrap();
+    update_key_f64(&mut f, "PC2_2", t.cos()).unwrap();
+    close(
+        pixel_scale_matrix(&mut f).unwrap(),
+        [[dx * t.cos(), -dx * t.sin()], [dy * t.sin(), dy * t.cos()]],
+    );
+
+    // A CD matrix wins over CDELT and PC, and may be skewed
+    let cd = [[-1.0e-3, 2.0e-4], [1.0e-4, 9.0e-4]];
+    for (i, row) in cd.iter().enumerate() {
+        for (j, v) in row.iter().enumerate() {
+            update_key_f64(&mut f, &format!("CD{}_{}", i + 1, j + 1), *v).unwrap();
+        }
+    }
+    close(pixel_scale_matrix(&mut f).unwrap(), cd);
+    let (sx, sy) = pixel_scale_deg(&mut f).unwrap();
+    assert!((sx - cd[0][0].hypot(cd[1][0])).abs() < 1e-15);
+    assert!((sy - cd[0][1].hypot(cd[1][1])).abs() < 1e-15);
+}

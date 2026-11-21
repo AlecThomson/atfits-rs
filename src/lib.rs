@@ -32,7 +32,7 @@ pub use error::{AtfitsError, Result, is_reentrant, status_message};
 pub use hdu::{HduOffsets, hdu_count, hdu_offsets, image_bitpix, is_compressed_image};
 pub use header::{
     HeaderGeom, TargetAxis, find_target_axis, find_target_axis_in, frequency_unit_scale,
-    pixel_scale_deg, spectral_unit_scale, time_unit_scale,
+    pixel_scale_deg, pixel_scale_matrix, spectral_unit_scale, time_unit_scale,
 };
 pub use image::{
     bitpix_to_image_type, card_name, copy_hdu_header, copy_header_only, copy_header_only_open,
