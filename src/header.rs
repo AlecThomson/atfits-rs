@@ -187,6 +187,17 @@ fn unit_scale(unit: Option<&str>, table: &[(&str, f64)]) -> Option<f64> {
 /// Uses the CD matrix when present, else CDELTi with PCi_j. CUNIT1/2 may be
 /// deg (the default), arcmin, arcsec or rad.
 pub fn pixel_scale_deg(fptr: &mut FitsFile) -> Result<(f64, f64)> {
+    let m = pixel_scale_matrix(fptr)?;
+    Ok((m[0][0].hypot(m[1][0]), m[0][1].hypot(m[1][1])))
+}
+
+/// The linear pixel-to-world matrix of the first two axes in degrees, signs
+/// kept: `m[i][j]` is the step along world axis `i + 1` per pixel step along
+/// axis `j + 1`, as astropy's `pixel_scale_matrix`.
+///
+/// Uses the CD matrix when present, else CDELTi with PCi_j. CUNIT1/2 may be
+/// deg (the default), arcmin, arcsec or rad.
+pub fn pixel_scale_matrix(fptr: &mut FitsFile) -> Result<[[f64; 2]; 2]> {
     let mut has_cd = false;
     for key in ["CD1_1", "CD1_2", "CD2_1", "CD2_2"] {
         has_cd |= key_exists(fptr, key)?;
@@ -213,7 +224,7 @@ pub fn pixel_scale_deg(fptr: &mut FitsFile) -> Result<(f64, f64)> {
             m[i - 1][j - 1] = v * row_scale * deg;
         }
     }
-    Ok((m[0][0].hypot(m[1][0]), m[0][1].hypot(m[1][1])))
+    Ok(m)
 }
 
 fn angle_unit_deg(unit: Option<&str>) -> Option<f64> {
