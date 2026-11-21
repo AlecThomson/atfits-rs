@@ -102,6 +102,12 @@ pub fn delete_key(fptr: &mut FitsFile, name: &str) -> Result<()> {
     }
 }
 
+/// Append HISTORY cards, wrapped over as many as `text` needs.
+pub fn write_history(fptr: &mut FitsFile, text: &str) -> Result<()> {
+    let text = cstr(text)?;
+    ffcall(|s| unsafe { sys::ffphis(fptr.as_raw(), text.as_ptr(), s) })
+}
+
 /// Append a COMMENT card.
 pub fn write_comment(fptr: &mut FitsFile, comment: &str) -> Result<()> {
     let comment = cstr(comment)?;

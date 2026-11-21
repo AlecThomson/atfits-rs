@@ -6,7 +6,7 @@ use std::path::Path;
 
 use fitsio::FitsFile;
 use fitsio::images::{ImageDescription, ImageType};
-use fitsio::sys::{self, LONGLONG};
+use fitsio::sys;
 
 use crate::error::{AtfitsError, Result, ffcall};
 use crate::keys::cstr;
@@ -178,7 +178,7 @@ pub(crate) fn copy_template_cards(
 }
 
 /// Keyword name of a card: the text before the first space or `=`.
-fn card_name(card: &[u8]) -> &str {
+pub fn card_name(card: &[u8]) -> &str {
     let end = card
         .iter()
         .position(|&b| b == b' ' || b == b'=')
@@ -188,9 +188,8 @@ fn card_name(card: &[u8]) -> &str {
 
 /// Padded size in bytes of the current HDU's data unit.
 fn data_unit_len(fptr: &mut FitsFile) -> Result<u64> {
-    let (mut head, mut data, mut end): (LONGLONG, LONGLONG, LONGLONG) = (0, 0, 0);
-    ffcall(|s| unsafe { sys::ffghadll(fptr.as_raw(), &mut head, &mut data, &mut end, s) })?;
-    Ok((end - data) as u64)
+    let o = crate::hdu::hdu_offsets(fptr)?;
+    Ok(o.data_end - o.data_start)
 }
 
 /// The current header as FITS bytes: every card except `exclude`, `reserve`
@@ -203,8 +202,9 @@ pub(crate) fn serialise_header(
     Ok(finish_header(header_cards(fptr, exclude)?, reserve))
 }
 
-/// The cards of the current header except `exclude`, without END.
-fn header_cards(fptr: &mut FitsFile, exclude: &[&str]) -> Result<Vec<u8>> {
+/// The cards of the current header except `exclude`, 80 bytes each, without
+/// END.
+pub fn header_cards(fptr: &mut FitsFile, exclude: &[&str]) -> Result<Vec<u8>> {
     let excl: Vec<CString> = exclude.iter().map(|k| cstr(k)).collect::<Result<_>>()?;
     let mut excl_ptrs: Vec<*mut c_char> = excl.iter().map(|c| c.as_ptr() as *mut c_char).collect();
     let mut text: *mut c_char = std::ptr::null_mut();
